@@ -11,8 +11,8 @@ UUID = clipmaster@gnome.extension
 INSTALL_DIR = $(HOME)/.local/share/gnome-shell/extensions/$(UUID)
 
 # Files to include in the package
-SOURCES = extension.js prefs.js metadata.json LICENSE
-ASSETS = assets/stylesheet.css assets/icons/clipmaster-symbolic.svg
+SOURCES = extension.js prefs.js metadata.json LICENSE stylesheet.css
+ASSETS = assets/icons/clipmaster-symbolic.svg
 SCHEMAS = schemas/org.gnome.shell.extensions.clipmaster.gschema.xml
 SRC_MANAGER = src/Manager/Database.js src/Manager/ClipboardMonitor.js
 SRC_UI = src/UI/Indicator.js src/UI/Popup.js
@@ -35,10 +35,10 @@ install: schemas
 	@mkdir -p $(INSTALL_DIR)/src/UI
 	@mkdir -p $(INSTALL_DIR)/src/Util
 	@cp $(SOURCES) $(INSTALL_DIR)/
-	@cp assets/stylesheet.css $(INSTALL_DIR)/assets/
+
 	@cp assets/icons/* $(INSTALL_DIR)/assets/icons/
 	@cp schemas/*.xml $(INSTALL_DIR)/schemas/
-	@cp schemas/gschemas.compiled $(INSTALL_DIR)/schemas/ 2>/dev/null || true
+
 	@cp src/Manager/*.js $(INSTALL_DIR)/src/Manager/
 	@cp src/UI/*.js $(INSTALL_DIR)/src/UI/
 	@cp src/Util/*.js $(INSTALL_DIR)/src/Util/
@@ -57,14 +57,12 @@ package: schemas
 		$(SOURCES) \
 		assets/ \
 		schemas/*.xml \
-		schemas/gschemas.compiled \
 		src/
 	@echo "Package created: $(UUID).zip"
 
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -f $(UUID).zip
-	@rm -f schemas/gschemas.compiled
 	@rm -f po/*.mo
 	@echo "Done!"
 

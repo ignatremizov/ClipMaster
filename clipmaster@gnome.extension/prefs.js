@@ -675,7 +675,7 @@ export default class ClipMasterPreferences extends ExtensionPreferences {
 
         const versionRow = new Adw.ActionRow({
             title: _('Version'),
-            subtitle: '1.1.0'
+            subtitle: '1.1.1'
         });
         aboutGroup.add(versionRow);
 

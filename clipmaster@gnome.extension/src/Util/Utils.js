@@ -13,11 +13,12 @@ export class SignalManager {
 
     connect(object, signal, callback, id) {
         if (!object || !signal || !callback) {
-            throw new Error('SignalManager.connect: Invalid parameters');
+            console.error('SignalManager.connect: Invalid parameters');
+            return 0;
         }
 
         const handlerId = object.connect(signal, callback);
-        
+
         if (id) {
             if (!this._connections.has(id)) {
                 this._connections.set(id, []);
@@ -59,25 +60,25 @@ export class SignalManager {
 export class TimeoutManager {
     constructor() {
         this._timeouts = new Map();
+        this._counter = 0;
     }
 
     add(priority, interval, callback, id) {
-        if (this._timeouts.has(id)) {
+        if (id && this._timeouts.has(id)) {
             this.remove(id);
         }
 
+        const trackingId = id || `anonymous_${++this._counter}`;
+
         const timeoutId = GLib.timeout_add(priority, interval, () => {
             const result = callback();
-            if (id) {
-                this._timeouts.delete(id);
+            if (result === GLib.SOURCE_REMOVE) {
+                this._timeouts.delete(trackingId);
             }
             return result;
         });
 
-        if (id) {
-            this._timeouts.set(id, timeoutId);
-        }
-
+        this._timeouts.set(trackingId, timeoutId);
         return timeoutId;
     }
 
@@ -104,47 +105,43 @@ export class FileUtils {
             GLib.mkdir_with_parents(dir, 0o755);
             return true;
         } catch (e) {
-            log(`FileUtils.ensureDirectory error: ${e.message}`);
+            console.error(`FileUtils.ensureDirectory error: ${e.message}`);
             return false;
         }
     }
 
-    static loadTextFile(path) {
+    static async loadTextFile(path) {
         try {
             const file = Gio.File.new_for_path(path);
             if (!file.query_exists(null)) {
                 return null;
             }
 
-            const [success, contents] = file.load_contents(null);
-            if (!success) {
-                return null;
-            }
-
+            const [contents] = await file.load_contents_async(null);
             return new TextDecoder().decode(contents);
         } catch (e) {
-            log(`FileUtils.loadTextFile error: ${e.message}`);
+            console.warn(`FileUtils.loadTextFile error: ${e.message}`);
             return null;
         }
     }
 
-    static saveTextFile(path, content) {
+    static async saveTextFile(path, content) {
         try {
             FileUtils.ensureDirectory(path);
             const file = Gio.File.new_for_path(path);
-            
+
             const encoder = new TextEncoder();
-            file.replace_contents(
+            await file.replace_contents_async(
                 encoder.encode(content),
                 null,
                 false,
                 Gio.FileCreateFlags.REPLACE_DESTINATION,
                 null
             );
-            
+
             return true;
         } catch (e) {
-            log(`FileUtils.saveTextFile error: ${e.message}`);
+            console.error(`FileUtils.saveTextFile error: ${e.message}`);
             return false;
         }
     }
@@ -164,7 +161,7 @@ export class SettingsCache {
         this._settings = settings;
         this._cache = new Map();
         this._connectionId = null;
-        
+
         if (settings) {
             this._connectionId = settings.connect('changed', this._onSettingChanged.bind(this));
         }
@@ -236,7 +233,7 @@ export class HashUtils {
 
         let hash = 0;
         const str = String(content);
-        
+
         for (let i = 0; i < str.length; i++) {
             const char = str.charCodeAt(i);
             hash = ((hash << 5) - hash) + char;

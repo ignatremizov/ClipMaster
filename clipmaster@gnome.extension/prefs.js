@@ -725,7 +725,7 @@ export default class ClipMasterPreferences extends ExtensionPreferences {
             } catch (e) {
                 // User cancelled or error
                 if (!e.matches(Gtk.DialogError, Gtk.DialogError.DISMISSED)) {
-                    log(`ClipMaster: Browse error: ${e.message}`);
+                    console.error(`ClipMaster: Browse error: ${e.message}`);
                 }
             }
         });
@@ -813,12 +813,12 @@ export default class ClipMasterPreferences extends ExtensionPreferences {
                             const keyDestPath = exportPath.replace(/\.json$/, '.key');
                             const keyDestFile = Gio.File.new_for_path(keyDestPath);
                             keySourceFile.copy(keyDestFile, Gio.FileCopyFlags.OVERWRITE, null, null);
-                            log('ClipMaster: Exported encryption key file alongside database');
+                            console.log('ClipMaster: Exported encryption key file alongside database');
                         }
                     }
                 }
             } catch (e) {
-                log(`ClipMaster: Export error: ${e.message}`);
+                console.error(`ClipMaster: Export error: ${e.message}`);
             }
         });
     }
@@ -858,7 +858,7 @@ export default class ClipMasterPreferences extends ExtensionPreferences {
                         const keyDestPath = storagePath.replace(/\.json$/, '.key');
                         const keyDestFile = Gio.File.new_for_path(keyDestPath);
                         keySourceFile.copy(keyDestFile, Gio.FileCopyFlags.OVERWRITE, null, null);
-                        log('ClipMaster: Imported encryption key file alongside database');
+                        console.log('ClipMaster: Imported encryption key file alongside database');
 
                         // Also update GSettings with the key for backward compatibility
                         try {
@@ -867,16 +867,16 @@ export default class ClipMasterPreferences extends ExtensionPreferences {
                                 const keyStr = new TextDecoder().decode(keyContents).trim();
                                 if (keyStr.length >= 16) {
                                     settings.set_string('encryption-key', keyStr);
-                                    log('ClipMaster: Updated GSettings with imported encryption key');
+                                    console.log('ClipMaster: Updated GSettings with imported encryption key');
                                 }
                             }
                         } catch (keyError) {
-                            log(`ClipMaster: Could not update GSettings with key: ${keyError.message}`);
+                            console.error(`ClipMaster: Could not update GSettings with key: ${keyError.message}`);
                         }
                     }
                 }
             } catch (e) {
-                log(`ClipMaster: Import error: ${e.message}`);
+                console.error(`ClipMaster: Import error: ${e.message}`);
             }
         });
     }
@@ -941,7 +941,7 @@ export default class ClipMasterPreferences extends ExtensionPreferences {
                             }
                             contentStr = decrypted;
                         } catch (decryptError) {
-                            log(`ClipMaster: Decryption error: ${decryptError.message}`);
+                            console.error(`ClipMaster: Decryption error: ${decryptError.message}`);
                             throw new Error(_('Failed to decrypt database. Encryption key may be incorrect.'));
                         }
                     }
@@ -950,7 +950,7 @@ export default class ClipMasterPreferences extends ExtensionPreferences {
                     try {
                         data = JSON.parse(contentStr);
                     } catch (parseError) {
-                        log(`ClipMaster: JSON parse error: ${parseError.message}, content: ${contentStr.substring(0, 100)}`);
+                        console.error(`ClipMaster: JSON parse error: ${parseError.message}, content: ${contentStr.substring(0, 100)}`);
                         throw new Error(_('Invalid JSON in database file. File may be corrupted.'));
                     }
 
@@ -1004,7 +1004,7 @@ export default class ClipMasterPreferences extends ExtensionPreferences {
                     successDialog.add_response('ok', _('OK'));
                     successDialog.present(window);
                 } catch (e) {
-                    log(`ClipMaster: Clear error: ${e.message}`);
+                    console.error(`ClipMaster: Clear error: ${e.message}`);
                     const errorDialog = new Adw.MessageDialog({
                         heading: _('Error'),
                         body: _('Error clearing history: ') + e.message,

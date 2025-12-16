@@ -12,18 +12,18 @@ export const ItemType = {
     COLOR: 'color'
 };
 
-let _debugMode = false;
+export let _debugMode = false;
 
 export function debugLog(message) {
     if (_debugMode) {
-        log(`ClipMaster DEBUG: ${message}`);
+        console.debug(`ClipMaster DEBUG: ${message}`);
     }
 }
 
 export function setDebugMode(enabled) {
     _debugMode = enabled;
     if (enabled) {
-        log('ClipMaster: Debug mode ENABLED');
+        console.log('ClipMaster: Debug mode ENABLED');
     }
 }
 

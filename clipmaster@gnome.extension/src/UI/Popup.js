@@ -1404,16 +1404,7 @@ export const ClipboardPopup = GObject.registerClass(
                         this._database.toggleFavorite(this._items[this._selectedIndex].id);
                         this._loadItems();
                     }
-                    _clearItemTimeouts() {
-                        if (this._itemsBox) {
-                            this._itemsBox.get_children().forEach(child => {
-                                if (child._pasteTimeoutId) {
-                                    GLib.source_remove(child._pasteTimeoutId);
-                                    child._pasteTimeoutId = null;
-                                }
-                            });
-                        }
-                    }
+
 
                     return Clutter.EVENT_STOP;
                 }

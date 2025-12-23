@@ -285,41 +285,38 @@ export const ClipboardPopup = GObject.registerClass(
             this._header.connect('button-press-event', (actor, event) => {
                 debugLog(`Header button-press-event triggered`);
 
-                try {
-                    const source = event.get_source();
-                    debugLog(`Event source: ${source ? source.toString() : 'null'}`);
+                const source = event.get_source();
+                debugLog(`Event source: ${source ? source.toString() : 'null'}`);
 
-                    if (!source) {
-                        debugLog(`No source, starting drag anyway`);
-                        if (event.get_button() === 1) {
-                            this._startDrag(event);
-                            return Clutter.EVENT_STOP;
-                        }
-                        return Clutter.EVENT_PROPAGATE;
-                    }
-
-                    const parent = source.get_parent ? source.get_parent() : null;
-
-                    if (source === this._closeButton ||
-                        source === this._pinButton ||
-                        source === this._plainTextButton ||
-                        source === this._addListButton ||
-                        parent === this._closeButton ||
-                        parent === this._pinButton ||
-                        parent === this._plainTextButton ||
-                        parent === this._addListButton) {
-                        debugLog(`Clicked on button, not starting drag`);
-                        return Clutter.EVENT_PROPAGATE;
-                    }
-
+                if (!source) {
+                    debugLog(`No source, starting drag anyway`);
                     if (event.get_button() === 1) {
-                        debugLog(`Left click on header, starting drag`);
                         this._startDrag(event);
                         return Clutter.EVENT_STOP;
                     }
-                } catch (e) {
-                    debugLog(`Header drag error: ${e.message}`);
+                    return Clutter.EVENT_PROPAGATE;
                 }
+
+                const parent = source.get_parent ? source.get_parent() : null;
+
+                if (source === this._closeButton ||
+                    source === this._pinButton ||
+                    source === this._plainTextButton ||
+                    source === this._addListButton ||
+                    parent === this._closeButton ||
+                    parent === this._pinButton ||
+                    parent === this._plainTextButton ||
+                    parent === this._addListButton) {
+                    debugLog(`Clicked on button, not starting drag`);
+                    return Clutter.EVENT_PROPAGATE;
+                }
+
+                if (event.get_button() === 1) {
+                    debugLog(`Left click on header, starting drag`);
+                    this._startDrag(event);
+                    return Clutter.EVENT_STOP;
+                }
+
                 return Clutter.EVENT_PROPAGATE;
             });
 
@@ -542,85 +539,73 @@ export const ClipboardPopup = GObject.registerClass(
 
         _startDrag(event) {
             debugLog(`_startDrag called`);
-            try {
-                // Don't start drag if not showing
-                if (!this._isShowing || !this.visible) {
-                    debugLog('Not starting drag - popup not showing');
-                    return;
-                }
 
-                this._dragging = true;
-                [this._dragStartX, this._dragStartY] = event.get_coords();
-                [this._dragStartPosX, this._dragStartPosY] = this.get_position();
-
-                debugLog(`Drag start coords: (${this._dragStartX}, ${this._dragStartY})`);
-                debugLog(`Popup position: (${this._dragStartPosX}, ${this._dragStartPosY})`);
-
-                if (isNaN(this._dragStartX) || isNaN(this._dragStartY) ||
-                    isNaN(this._dragStartPosX) || isNaN(this._dragStartPosY)) {
-                    debugLog(`Invalid drag coords, cancelling`);
-                    this._dragging = false;
-                    return;
-                }
-
-                debugLog(`Connecting motion-event to global.stage`);
-                this._signalManager.connect(
-                    global.stage,
-                    'motion-event',
-                    (actor, motionEvent) => {
-                        // Safety check - don't block if not dragging or popup hidden
-                        if (!this._dragging || !this._isShowing || !this.visible) {
-                            return Clutter.EVENT_PROPAGATE;
-                        }
-
-                        try {
-                            const [currentX, currentY] = motionEvent.get_coords();
-                            if (isNaN(currentX) || isNaN(currentY)) return Clutter.EVENT_PROPAGATE;
-
-                            const newX = Math.round(this._dragStartPosX + (currentX - this._dragStartX));
-                            const newY = Math.round(this._dragStartPosY + (currentY - this._dragStartY));
-
-                            if (!isNaN(newX) && !isNaN(newY)) {
-                                this.set_position(newX, newY);
-                            }
-                        } catch (e) {
-                            debugLog(`Drag motion error: ${e.message}`);
-                            return Clutter.EVENT_PROPAGATE;
-                        }
-                        // Only stop event during active drag
-                        return Clutter.EVENT_STOP;
-                    },
-                    'drag-motion'
-                );
-
-                this._signalManager.connect(
-                    global.stage,
-                    'button-release-event',
-                    () => {
-                        debugLog(`Drag released`);
-                        this._stopDrag();
-                        // Don't block the release event
-                        return Clutter.EVENT_PROPAGATE;
-                    },
-                    'drag-release'
-                );
-
-                debugLog(`Drag setup complete using SignalManager`);
-            } catch (e) {
-                debugLog(`Start drag error: ${e.message}`);
-                this._dragging = false;
+            // Don't start drag if not showing
+            if (!this._isShowing || !this.visible) {
+                debugLog('Not starting drag - popup not showing');
+                return;
             }
+
+            this._dragging = true;
+            [this._dragStartX, this._dragStartY] = event.get_coords();
+            [this._dragStartPosX, this._dragStartPosY] = this.get_position();
+
+            debugLog(`Drag start coords: (${this._dragStartX}, ${this._dragStartY})`);
+            debugLog(`Popup position: (${this._dragStartPosX}, ${this._dragStartPosY})`);
+
+            if (isNaN(this._dragStartX) || isNaN(this._dragStartY) ||
+                isNaN(this._dragStartPosX) || isNaN(this._dragStartPosY)) {
+                debugLog(`Invalid drag coords, cancelling`);
+                this._dragging = false;
+                return;
+            }
+
+            debugLog(`Connecting motion-event to global.stage`);
+            this._signalManager.connect(
+                global.stage,
+                'motion-event',
+                (actor, motionEvent) => {
+                    // Safety check - don't block if not dragging or popup hidden
+                    if (!this._dragging || !this._isShowing || !this.visible) {
+                        return Clutter.EVENT_PROPAGATE;
+                    }
+
+                    const [currentX, currentY] = motionEvent.get_coords();
+                    if (isNaN(currentX) || isNaN(currentY)) return Clutter.EVENT_PROPAGATE;
+
+                    const newX = Math.round(this._dragStartPosX + (currentX - this._dragStartX));
+                    const newY = Math.round(this._dragStartPosY + (currentY - this._dragStartY));
+
+                    if (!isNaN(newX) && !isNaN(newY)) {
+                        this.set_position(newX, newY);
+                    }
+
+                    // Only stop event during active drag
+                    return Clutter.EVENT_STOP;
+                },
+                'drag-motion'
+            );
+
+            this._signalManager.connect(
+                global.stage,
+                'button-release-event',
+                () => {
+                    debugLog(`Drag released`);
+                    this._stopDrag();
+                    // Don't block the release event
+                    return Clutter.EVENT_PROPAGATE;
+                },
+                'drag-release'
+            );
+
+            debugLog(`Drag setup complete using SignalManager`);
         }
 
         _stopDrag() {
             this._dragging = false;
-            try {
-                if (this._signalManager) {
-                    this._signalManager.disconnect('drag-motion');
-                    this._signalManager.disconnect('drag-release');
-                }
-            } catch (e) {
-                debugLog(`_stopDrag error: ${e.message}`);
+            if (this._signalManager) {
+                this._signalManager.disconnect('drag-motion');
+                this._signalManager.disconnect('drag-release');
             }
         }
 

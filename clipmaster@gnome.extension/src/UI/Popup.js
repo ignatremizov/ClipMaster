@@ -333,13 +333,10 @@ export const ClipboardPopup = GObject.registerClass(
                 this._searchQuery = this._searchEntry.get_text();
                 this._loadItems();
             });
-            this._searchEntry.clutter_text.connect('key-press-event', (actor, event) => {
-                const symbol = event.get_key_symbol();
-                if (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter) {
-                    this._pasteSelected();
-                    return Clutter.EVENT_STOP;
-                }
-                return Clutter.EVENT_PROPAGATE;
+            this._searchEntry.clutter_text.connect('activate', () => {
+                debugLog('Search entry activated (Enter pressed)');
+                this._pasteSelected();
+                return Clutter.EVENT_STOP;
             });
 
             this.add_child(this._searchEntry);
@@ -1469,26 +1466,32 @@ export const ClipboardPopup = GObject.registerClass(
         _scrollToSelected() {
             if (this._selectedIndex < 0 || !this._itemsBox) return;
 
-            const children = this._itemsBox.get_children();
-            if (this._selectedIndex >= children.length) return;
+            // Wait for layout update
+            GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+                if (!this._itemsBox || !this._scrollView) return GLib.SOURCE_REMOVE;
 
-            const child = children[this._selectedIndex];
-            const adjustment = this._scrollView.vscroll.adjustment;
+                const children = this._itemsBox.get_children();
+                if (this._selectedIndex >= children.length) return GLib.SOURCE_REMOVE;
 
-            const allocation = child.get_allocation_box();
-            const childTop = allocation.y1;
-            const childBottom = allocation.y2;
-            const childHeight = childBottom - childTop;
+                const child = children[this._selectedIndex];
+                const adjustment = this._scrollView.vscroll.adjustment;
 
-            const viewHeight = adjustment.page_size;
-            const scrollValue = adjustment.value;
+                const allocation = child.get_allocation_box();
+                const childTop = allocation.y1;
+                const childBottom = allocation.y2;
 
-            if (childTop < scrollValue) {
-                // Child is above visible area
-                adjustment.value = childTop;
-            } else if (childBottom > scrollValue + viewHeight) {
-                // Child is below visible area
-                adjustment.value = childBottom - viewHeight;
-            }
+                const viewHeight = adjustment.page_size;
+                const scrollValue = adjustment.value;
+
+                debugLog(`ScrollToSelected: childTop=${childTop}, childBottom=${childBottom}, scrollValue=${scrollValue}, viewHeight=${viewHeight}`);
+
+                if (childTop < scrollValue) {
+                    adjustment.value = childTop;
+                } else if (childBottom > scrollValue + viewHeight) {
+                    adjustment.value = childBottom - viewHeight;
+                }
+
+                return GLib.SOURCE_REMOVE;
+            });
         }
     });

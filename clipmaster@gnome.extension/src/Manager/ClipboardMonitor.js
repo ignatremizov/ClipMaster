@@ -268,33 +268,28 @@ export class ClipboardMonitor {
         }
 
         // Use native Meta.Selection API
-        try {
-            const metaSelectionType = selectionType === 'PRIMARY'
-                ? Meta.SelectionType.SELECTION_PRIMARY
-                : Meta.SelectionType.SELECTION_CLIPBOARD;
+        const metaSelectionType = selectionType === 'PRIMARY'
+            ? Meta.SelectionType.SELECTION_PRIMARY
+            : Meta.SelectionType.SELECTION_CLIPBOARD;
 
-            const mimetypes = this._selection.get_mimetypes(metaSelectionType);
-            debugLog(`Available MIME types: ${mimetypes ? mimetypes.join(', ') : 'none'}`);
+        const mimetypes = this._selection.get_mimetypes(metaSelectionType);
+        debugLog(`Available MIME types: ${mimetypes ? mimetypes.join(', ') : 'none'}`);
 
-            if (mimetypes && mimetypes.length > 0) {
-                const hasImage = mimetypes.some(mime =>
-                    mime.startsWith('image/')
-                );
+        if (mimetypes && mimetypes.length > 0) {
+            const hasImage = mimetypes.some(mime =>
+                mime.startsWith('image/')
+            );
 
-                if (hasImage) {
-                    debugLog(`✓ Image MIME type detected via Meta.Selection`);
-                    const isWayland = GLib.getenv('XDG_SESSION_TYPE') === 'wayland';
-                    this._fetchImageFromClipboard(isWayland, selectionType, callback);
-                    return;
-                }
+            if (hasImage) {
+                debugLog(`✓ Image MIME type detected via Meta.Selection`);
+                const isWayland = GLib.getenv('XDG_SESSION_TYPE') === 'wayland';
+                this._fetchImageFromClipboard(isWayland, selectionType, callback);
+                return;
             }
-
-            debugLog(`✗ No image MIME type found`);
-            if (callback) callback(false);
-        } catch (e) {
-            debugLog(`Meta.Selection check error: ${e.message}, text only fallback`);
-            if (callback) callback(false);
         }
+
+        debugLog(`✗ No image MIME type found`);
+        if (callback) callback(false);
     }
 
     _fetchImageFromClipboard(isWayland, selectionType = 'CLIPBOARD', callback = null) {
@@ -326,12 +321,10 @@ export class ClipboardMonitor {
                 async (selection, result) => {
                     let imageSuccessfullyAdded = false;
 
-                    try {
-                        outputStream.close(null);
-                    } catch (e) { }
+                    outputStream.close(null);
 
                     if (this._isStopped) {
-                        try { tempFile.delete(null); } catch (e) { }
+                        tempFile.delete(null);
                         return;
                     }
 
@@ -392,7 +385,7 @@ export class ClipboardMonitor {
                         debugLog(`Native image fetch error: ${e.message}`);
                     }
 
-                    try { tempFile.delete(null); } catch (e) { }
+                    tempFile.delete(null);
 
                     if (callback) {
                         callback(imageSuccessfullyAdded);

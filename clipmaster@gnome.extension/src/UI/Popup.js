@@ -60,7 +60,7 @@ export const ClipboardPopup = GObject.registerClass(
             this._dragStartPosY = 0;
 
             this._modalOverlay = null;
-            this._isDisposed = false;
+
 
             this._signalManager = new SignalManager();
             this._timeoutManager = new TimeoutManager();
@@ -107,7 +107,7 @@ export const ClipboardPopup = GObject.registerClass(
 
         _applyTheme() {
             // Safety check for disposed object
-            if (this._isDisposed) return;
+            if (!this._itemsBox) return;
 
             try {
                 // Remove all theme classes first
@@ -333,6 +333,15 @@ export const ClipboardPopup = GObject.registerClass(
                 this._searchQuery = this._searchEntry.get_text();
                 this._loadItems();
             });
+            this._searchEntry.clutter_text.connect('key-press-event', (actor, event) => {
+                const symbol = event.get_key_symbol();
+                if (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter) {
+                    this._pasteSelected();
+                    return Clutter.EVENT_STOP;
+                }
+                return Clutter.EVENT_PROPAGATE;
+            });
+
             this.add_child(this._searchEntry);
 
             const filterBar = new St.BoxLayout({
@@ -787,7 +796,7 @@ export const ClipboardPopup = GObject.registerClass(
 
             debugLog(`Popup shown at ${this._showTime}`);
 
-            this._timeoutManager.add(
+            this._outsideClickTimeoutId = this._timeoutManager.add(
                 GLib.PRIORITY_DEFAULT,
                 800,
                 () => {
@@ -806,13 +815,9 @@ export const ClipboardPopup = GObject.registerClass(
 
         cancelClickOutside() {
             if (this._signalManager) {
-                try {
-                    this._signalManager.disconnect('click-outside-handler');
-                    this._timeoutManager.remove('click-outside-setup');
-                    debugLog('Click outside handler cancelled');
-                } catch (e) {
-                    debugLog(`Error cancelling click outside: ${e.message}`);
-                }
+                this._signalManager.disconnect('click-outside-handler');
+                this._timeoutManager.remove('click-outside-setup');
+                debugLog('Click outside handler cancelled');
             }
         }
 
@@ -841,16 +846,12 @@ export const ClipboardPopup = GObject.registerClass(
         }
 
         _cleanupAllGlobalHandlers() {
-            try {
-                if (this._signalManager) {
-                    // Disconnect all known global stage handlers
-                    this._signalManager.disconnect('click-outside-handler');
-                    this._signalManager.disconnect('drag-motion');
-                    this._signalManager.disconnect('drag-release');
-                    debugLog('All global handlers disconnected');
-                }
-            } catch (e) {
-                debugLog(`Error disconnecting global handlers: ${e.message}`);
+            if (this._signalManager) {
+                // Disconnect all known global stage handlers
+                this._signalManager.disconnect('click-outside-handler');
+                this._signalManager.disconnect('drag-motion');
+                this._signalManager.disconnect('drag-release');
+                debugLog('All global handlers disconnected');
             }
 
             // Reset dragging state
@@ -858,14 +859,16 @@ export const ClipboardPopup = GObject.registerClass(
         }
 
         dispose_resources() {
-            // Prevent double disposal
-            if (this._isDisposed) return;
-            this._isDisposed = true;
+            // Prevent double disposal check not needed if we check properties
+
 
             // Force cleanup regardless of pin state
             this._isPinned = false;
             this._isShowing = false;
             this._dragging = false;
+
+            // Clean up item timeouts
+            this._clearItemTimeouts();
 
             // Clean up all global handlers first
             this._cleanupAllGlobalHandlers();
@@ -874,6 +877,11 @@ export const ClipboardPopup = GObject.registerClass(
             if (this._signalManager) {
                 this._signalManager.disconnectAll();
                 this._signalManager = null;
+            }
+
+            if (this._outsideClickTimeoutId) {
+                this._timeoutManager.remove(this._outsideClickTimeoutId);
+                this._outsideClickTimeoutId = null;
             }
 
             if (this._timeoutManager) {
@@ -889,13 +897,9 @@ export const ClipboardPopup = GObject.registerClass(
             this._removeModalOverlay();
 
             if (this._customStylesheet) {
-                try {
-                    const theme = St.ThemeContext.get_for_stage(global.stage).get_theme();
-                    theme.unload_stylesheet(this._customStylesheet);
-                    this._customStylesheet = null;
-                } catch (e) {
-                    // Ignore cleanup errors during disposal
-                }
+                const theme = St.ThemeContext.get_for_stage(global.stage).get_theme();
+                theme.unload_stylesheet(this._customStylesheet);
+                this._customStylesheet = null;
             }
 
             this._extension = null;
@@ -913,7 +917,7 @@ export const ClipboardPopup = GObject.registerClass(
 
         _loadItems() {
             // Safety checks for disposed state
-            if (this._isDisposed || !this._itemsBox || !this._database) return;
+            if (!this._itemsBox || !this._database) return;
 
             this._itemsBox.destroy_all_children();
 
@@ -987,10 +991,8 @@ export const ClipboardPopup = GObject.registerClass(
                 this._updateSelection();
 
                 let pasteOnSelect = false;
-                try {
+                if (this._settings) {
                     pasteOnSelect = this._settings.get_boolean('paste-on-select');
-                } catch (e) {
-                    debugLog(`Error reading paste-on-select: ${e.message}`);
                 }
 
                 debugLog(`Hover on item ${index}, paste-on-select=${pasteOnSelect}, visible=${this.visible}, isShowing=${this._isShowing}`);
@@ -998,11 +1000,7 @@ export const ClipboardPopup = GObject.registerClass(
                 if (pasteOnSelect) {
                     if (row._pasteTimeoutId) {
                         debugLog(`Cancelling existing paste timeout for row ${index}`);
-                        try {
-                            GLib.source_remove(row._pasteTimeoutId);
-                        } catch (e) {
-                            debugLog(`Error removing existing paste timeout: ${e.message}`);
-                        }
+                        GLib.source_remove(row._pasteTimeoutId);
                         row._pasteTimeoutId = null;
                     }
 
@@ -1034,11 +1032,7 @@ export const ClipboardPopup = GObject.registerClass(
                 debugLog(`LEAVE EVENT on row ${index}`);
                 if (row._pasteTimeoutId) {
                     debugLog(`Cancelling paste timeout for item ${index} (user left row)`);
-                    try {
-                        GLib.source_remove(row._pasteTimeoutId);
-                    } catch (e) {
-                        debugLog(`Error removing paste timeout on leave: ${e.message}`);
-                    }
+                    GLib.source_remove(row._pasteTimeoutId);
                     row._pasteTimeoutId = null;
                 }
             });
@@ -1180,7 +1174,7 @@ export const ClipboardPopup = GObject.registerClass(
         }
 
         _updateSelection() {
-            if (this._isDisposed || !this._itemsBox) return;
+            if (!this._itemsBox) return;
 
             const children = this._itemsBox.get_children();
             children.forEach((child, index) => {
@@ -1222,10 +1216,8 @@ export const ClipboardPopup = GObject.registerClass(
             });
 
             let closeOnPaste = false;
-            try {
+            if (this._settings) {
                 closeOnPaste = this._settings.get_boolean('close-on-paste');
-            } catch (e) {
-                debugLog(`Error reading close-on-paste: ${e.message}`);
             }
 
             const isFromHover = this._pasteFromHover || false;
@@ -1412,7 +1404,17 @@ export const ClipboardPopup = GObject.registerClass(
                         this._database.toggleFavorite(this._items[this._selectedIndex].id);
                         this._loadItems();
                     }
-                    debugLog(`Favorite toggled via Alt+F`);
+                    _clearItemTimeouts() {
+                        if (this._itemsBox) {
+                            this._itemsBox.get_children().forEach(child => {
+                                if (child._pasteTimeoutId) {
+                                    GLib.source_remove(child._pasteTimeoutId);
+                                    child._pasteTimeoutId = null;
+                                }
+                            });
+                        }
+                    }
+
                     return Clutter.EVENT_STOP;
                 }
 
@@ -1474,23 +1476,28 @@ export const ClipboardPopup = GObject.registerClass(
         }
 
         _scrollToSelected() {
-            const children = this._itemsBox.get_children();
-            if (this._selectedIndex >= 0 && this._selectedIndex < children.length) {
-                const child = children[this._selectedIndex];
-                if (child) {
-                    const adj = this._scrollView.vscroll.adjustment;
-                    const [, childY] = child.get_transformed_position();
-                    const [, scrollY] = this._scrollView.get_transformed_position();
-                    const relativeY = childY - scrollY;
-                    const scrollHeight = this._scrollView.height;
-                    const childHeight = child.height;
+            if (this._selectedIndex < 0 || !this._itemsBox) return;
 
-                    if (relativeY < 0) {
-                        adj.value += relativeY;
-                    } else if (relativeY + childHeight > scrollHeight) {
-                        adj.value += (relativeY + childHeight - scrollHeight);
-                    }
-                }
+            const children = this._itemsBox.get_children();
+            if (this._selectedIndex >= children.length) return;
+
+            const child = children[this._selectedIndex];
+            const adjustment = this._scrollView.vscroll.adjustment;
+
+            const allocation = child.get_allocation_box();
+            const childTop = allocation.y1;
+            const childBottom = allocation.y2;
+            const childHeight = childBottom - childTop;
+
+            const viewHeight = adjustment.page_size;
+            const scrollValue = adjustment.value;
+
+            if (childTop < scrollValue) {
+                // Child is above visible area
+                adjustment.value = childTop;
+            } else if (childBottom > scrollValue + viewHeight) {
+                // Child is below visible area
+                adjustment.value = childBottom - viewHeight;
             }
         }
     });

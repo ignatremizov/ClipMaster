@@ -35,7 +35,13 @@ mkdir -p "$EXTENSION_DIR"
 
 # Copy files
 echo "→ Copying extension files..."
-cp -r "$SOURCE_DIR"/* "$EXTENSION_DIR/"
+echo "→ Copying extension files..."
+if [ -d "$SOURCE_DIR" ]; then
+    cp -r "$SOURCE_DIR"/* "$EXTENSION_DIR/"
+else
+    # Fallback if running from root of repo
+    cp -r clipmaster@gnome.extension/* "$EXTENSION_DIR/"
+fi
 
 # Compile schemas
 echo "→ Compiling GSettings schemas..."

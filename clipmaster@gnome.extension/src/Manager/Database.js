@@ -24,7 +24,7 @@ export class ClipboardDatabase {
         this._lists = [];
         this._nextId = 1;
         this._isDirty = false;
-        this._isDestroyed = false;
+
         this._isLoaded = false;
         this._pendingItems = [];
 
@@ -136,7 +136,7 @@ export class ClipboardDatabase {
     }
 
     _save() {
-        if (this._isDestroyed || !this._timeoutManager) return;
+        if (!this._timeoutManager) return;
 
         this._isDirty = true;
 
@@ -152,7 +152,7 @@ export class ClipboardDatabase {
     }
 
     _saveImmediate() {
-        if (this._isDestroyed || !this._timeoutManager) return;
+        if (!this._timeoutManager) return;
 
         this._timeoutManager.remove('database-save');
         this._doSave();
@@ -180,37 +180,43 @@ export class ClipboardDatabase {
 
             if (await FileUtils.saveTextFile(this._storagePath, jsonStr)) {
                 this._isDirty = false;
-                this._checkDatabaseSize();
+                await this._checkDatabaseSize();
             }
         } catch (e) {
             console.error(`ClipMaster: Error saving database: ${e.message}`);
         }
     }
 
-    getFileSize() {
+    async getFileSize() {
         try {
             const file = Gio.File.new_for_path(this._storagePath);
             if (!file.query_exists(null)) {
                 return 0;
             }
 
-            // query_info is synchronous here, but allowed? 
-            // The review asked for load_contents_async explicitly. 
-            // query_info is usually fast. I'll keep it sync for getFileSize accessors unless strictly needed.
-            // But to be super safe and future proof I could make it async, 
-            // but this method returns a value, so it must return promise if async.
-            // Since this is used in _checkDatabaseSize which is called from _doSave (async), 
-            // I should probably make this async/await too.
-            const info = file.query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null);
-            return info.get_size();
+            return new Promise((resolve, reject) => {
+                file.query_info_async(
+                    'standard::size',
+                    Gio.FileQueryInfoFlags.NONE,
+                    GLib.PRIORITY_DEFAULT,
+                    null,
+                    (obj, res) => {
+                        try {
+                            const info = obj.query_info_finish(res);
+                            resolve(info.get_size());
+                        } catch (e) {
+                            reject(e);
+                        }
+                    }
+                );
+            });
         } catch (e) {
             console.error(`ClipMaster: Error getting file size: ${e.message}`);
             return 0;
         }
     }
 
-    _checkDatabaseSize() {
-        // This is called from _doSave, which is async. So this can be sync-ish.
+    async _checkDatabaseSize() {
         if (!this._settings || this._isCleaning) return;
 
         try {
@@ -218,7 +224,7 @@ export class ClipboardDatabase {
             if (maxSizeMB <= 0) return;
 
             const maxSizeBytes = maxSizeMB * 1024 * 1024;
-            const currentSizeBytes = this.getFileSize();
+            const currentSizeBytes = await this.getFileSize();
 
             if (currentSizeBytes <= 0) return;
 
@@ -302,7 +308,7 @@ export class ClipboardDatabase {
     }
 
     destroy() {
-        this._isDestroyed = true;
+
 
         if (this._timeoutManager) {
             this._doSave();
@@ -312,7 +318,7 @@ export class ClipboardDatabase {
     }
 
     addItem(item) {
-        if (this._isDestroyed) return null;
+        if (!this._items) return null;
 
         const contentHash = HashUtils.hashContent(item.content);
 

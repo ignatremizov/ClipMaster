@@ -3,7 +3,7 @@
 ClipMaster is a clipboard manager for GNOME Shell 45+
 
 ![Screenshot](screenshots/ClipMaster_PopUp.png)
-
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Y8Y01PIT77)
 ## Features
 
 - Clipboard history (text, images, files, URLs)

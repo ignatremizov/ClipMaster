@@ -2,8 +2,8 @@
     "uuid": "clipmaster@gnome.extension",
     "name": "ClipMaster",
     "description": "ClipMaster is a clipboard manager with history, image support, favorites, and optional themes. Follows system dark/light preference by default.",
-    "version": 5,
-    "version-name": "1.2.1",
+    "version": 6,
+    "version-name": "1.2.2",
     "shell-version": [
         "45",
         "46",

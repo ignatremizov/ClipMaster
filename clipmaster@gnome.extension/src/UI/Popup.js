@@ -899,6 +899,24 @@ export const ClipboardPopup = GObject.registerClass(
             super.destroy();
         }
 
+        _clearItemTimeouts() {
+            // Clear all paste-on-hover timeouts from item rows
+            if (this._itemsBox) {
+                const children = this._itemsBox.get_children();
+                children.forEach(child => {
+                    if (child._pasteTimeoutId) {
+                        GLib.source_remove(child._pasteTimeoutId);
+                        child._pasteTimeoutId = null;
+                    }
+                    if (child._pasteResetTimeoutId) {
+                        GLib.source_remove(child._pasteResetTimeoutId);
+                        child._pasteResetTimeoutId = null;
+                    }
+                });
+            }
+            debugLog('Item timeouts cleared');
+        }
+
         _loadItems() {
             // Safety checks for disposed state
             if (!this._itemsBox || !this._database) return;
@@ -982,10 +1000,15 @@ export const ClipboardPopup = GObject.registerClass(
                 debugLog(`Hover on item ${index}, paste-on-select=${pasteOnSelect}, visible=${this.visible}, isShowing=${this._isShowing}`);
 
                 if (pasteOnSelect) {
+                    // Clear existing timeout before creating new one
                     if (row._pasteTimeoutId) {
                         debugLog(`Cancelling existing paste timeout for row ${index}`);
                         GLib.source_remove(row._pasteTimeoutId);
                         row._pasteTimeoutId = null;
+                    }
+                    if (row._pasteResetTimeoutId) {
+                        GLib.source_remove(row._pasteResetTimeoutId);
+                        row._pasteResetTimeoutId = null;
                     }
 
                     debugLog(`Setting up paste timeout for row ${index} (500ms delay)`);
@@ -997,8 +1020,14 @@ export const ClipboardPopup = GObject.registerClass(
                             debugLog(`✓ Conditions met - PASTING item ${index} (from paste-on-select hover)`);
                             this._pasteFromHover = true;
                             this._pasteSelected();
-                            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
+                            // Clear any existing reset timeout before creating new one
+                            if (row._pasteResetTimeoutId) {
+                                GLib.source_remove(row._pasteResetTimeoutId);
+                                row._pasteResetTimeoutId = null;
+                            }
+                            row._pasteResetTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
                                 this._pasteFromHover = false;
+                                row._pasteResetTimeoutId = null;
                                 return GLib.SOURCE_REMOVE;
                             });
                         } else {
@@ -1018,6 +1047,10 @@ export const ClipboardPopup = GObject.registerClass(
                     debugLog(`Cancelling paste timeout for item ${index} (user left row)`);
                     GLib.source_remove(row._pasteTimeoutId);
                     row._pasteTimeoutId = null;
+                }
+                if (row._pasteResetTimeoutId) {
+                    GLib.source_remove(row._pasteResetTimeoutId);
+                    row._pasteResetTimeoutId = null;
                 }
             });
 

@@ -5,6 +5,7 @@ ClipMaster is a clipboard manager for GNOME Shell 45+
 ![Screenshot](screenshots/ClipMaster_PopUpv121.png)
 
 <a href="https://www.buymeacoffee.com/sfnemis" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 40px !important;width: 150px !important;" ></a>
+
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/Y8Y01PIT77)
 ## Features
 

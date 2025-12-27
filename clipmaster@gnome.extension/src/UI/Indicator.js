@@ -67,7 +67,7 @@ export const ClipMasterIndicator = GObject.registerClass(
 
             this.menu.addAction(_('Preferences'), () => {
                 this.menu.close();
-                this._extension._openPreferencesWindow();
+                this._extension.openPreferences();
             });
         }
 

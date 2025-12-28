@@ -1,0 +1,637 @@
+/*
+ * ClipMaster - Database Manager
+ * License: GPL-2.0-or-later
+ */
+
+import GLib from 'gi://GLib';
+import Gio from 'gi://Gio';
+
+import { Extension, gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
+
+import { TimeoutManager, FileUtils, HashUtils } from '../Util/Utils.js';
+import { ItemType, debugLog } from '../Util/Constants.js';
+import { SimpleEncryption } from '../Util/Encryption.js';
+import { ImageStorage } from '../Util/ImageStorage.js';
+
+export class ClipboardDatabase {
+    constructor(storagePath, settings, onNotification = null) {
+        this._storagePath = storagePath || GLib.build_filenamev([
+            GLib.get_user_data_dir(), 'clipmaster', 'clipboard.json'
+        ]);
+        this._settings = settings;
+        this._onNotification = onNotification;
+
+        this._items = [];
+        this._lists = [];
+        this._nextId = 1;
+        this._isDirty = false;
+
+        this._isLoaded = false;
+        this._pendingItems = [];
+
+        this._lastWarningTime = 0;
+        this._warningCooldownMs = 60000;
+        this._isCleaning = false;
+
+        this._timeoutManager = new TimeoutManager();
+        this._saveDebounceMs = 500;
+
+        this._encryption = null;
+
+        // Initialize image storage for cleanup operations
+        this._imageStorage = new ImageStorage();
+
+        // Don't call async init here, caller must call init()
+    }
+
+    async init() {
+        FileUtils.ensureDirectory(this._storagePath);
+        await this._setupEncryption();
+        await this._load();
+    }
+
+    async _setupEncryption() {
+        if (this._settings && this._settings.get_boolean('encrypt-database')) {
+            // Key file path: same directory as clipboard.json, named clipmaster.key
+            const keyFilePath = this._storagePath.replace(/\.json$/, '.key');
+
+            let key = null;
+
+            // Priority 1: Try to load key from .key file (survives system format)
+            try {
+                const keyFromFile = await FileUtils.loadTextFile(keyFilePath);
+                if (keyFromFile && keyFromFile.trim().length >= 16) {
+                    key = keyFromFile.trim();
+                    debugLog('Encryption key loaded from key file');
+                }
+            } catch (e) {
+                // Key file doesn't exist or is unreadable
+            }
+
+            // Priority 2: Fall back to GSettings (for backward compatibility)
+            if (!key) {
+                key = this._settings.get_string('encryption-key');
+                if (key) {
+                    debugLog('Encryption key loaded from GSettings (fallback)');
+                }
+            }
+
+            // Priority 3: Generate new key if none exists
+            if (!key) {
+                this._encryption = new SimpleEncryption();
+                key = this._encryption.getKey();
+                debugLog('Generated new encryption key');
+            } else {
+                this._encryption = new SimpleEncryption(key);
+            }
+
+            // Always save key to both locations for redundancy
+            try {
+                await FileUtils.saveTextFile(keyFilePath, key);
+                debugLog('Encryption key saved to key file');
+            } catch (e) {
+                console.error(`ClipMaster: Could not save key file: ${e.message}`);
+            }
+
+            // Also keep in GSettings for backward compatibility
+            this._settings.set_string('encryption-key', key);
+        }
+    }
+
+    async _load() {
+        try {
+            const jsonStr = await FileUtils.loadTextFile(this._storagePath);
+            if (jsonStr) {
+                let decodedStr = jsonStr;
+
+                if (this._encryption && decodedStr.startsWith('ENC:')) {
+                    decodedStr = this._encryption.decrypt(decodedStr.substring(4));
+                }
+
+                const data = JSON.parse(decodedStr);
+
+                // Merge pending items that might have been added during async load
+                const loadedItems = data.items || [];
+                if (this._pendingItems.length > 0) {
+                    // Add pending items to the top if they are newer
+                    this._items = [...this._pendingItems, ...loadedItems];
+                    this._pendingItems = [];
+                    this._isDirty = true; // Need to save the merge
+                } else {
+                    this._items = loadedItems;
+                }
+
+                this._lists = data.lists || [];
+                this._nextId = Math.max(data.nextId || 1, this._nextId);
+            }
+            this._isLoaded = true;
+
+            if (this._isDirty) {
+                this._save();
+            }
+        } catch (e) {
+            console.error(`ClipMaster: Error loading database: ${e.message}`);
+            // Keep any pending items
+            this._items = this._pendingItems;
+            this._pendingItems = [];
+            // _lists initialized to [] in constructor
+            this._isLoaded = true;
+        }
+    }
+
+    _save() {
+        if (!this._timeoutManager) return;
+
+        this._isDirty = true;
+
+        this._timeoutManager.add(
+            GLib.PRIORITY_DEFAULT,
+            this._saveDebounceMs,
+            () => {
+                this._doSave();
+                return GLib.SOURCE_REMOVE;
+            },
+            'database-save'
+        );
+    }
+
+    _saveImmediate() {
+        if (!this._timeoutManager) return;
+
+        this._timeoutManager.remove('database-save');
+        this._doSave();
+    }
+
+    async _doSave() {
+        if (!this._isDirty) return;
+        if (!this._isLoaded) {
+            debugLog('Database not loaded yet, deferring save');
+            return;
+        }
+
+        try {
+            const data = {
+                items: this._items,
+                lists: this._lists,
+                nextId: this._nextId
+            };
+
+            let jsonStr = JSON.stringify(data, null, 2);
+
+            if (this._encryption) {
+                jsonStr = 'ENC:' + this._encryption.encrypt(jsonStr);
+            }
+
+            if (await FileUtils.saveTextFile(this._storagePath, jsonStr)) {
+                this._isDirty = false;
+                await this._checkDatabaseSize();
+            }
+        } catch (e) {
+            console.error(`ClipMaster: Error saving database: ${e.message}`);
+        }
+    }
+
+    async getFileSize() {
+        try {
+            const file = Gio.File.new_for_path(this._storagePath);
+            if (!file.query_exists(null)) {
+                return 0;
+            }
+
+            return new Promise((resolve, reject) => {
+                file.query_info_async(
+                    'standard::size',
+                    Gio.FileQueryInfoFlags.NONE,
+                    GLib.PRIORITY_DEFAULT,
+                    null,
+                    (obj, res) => {
+                        try {
+                            const info = obj.query_info_finish(res);
+                            resolve(info.get_size());
+                        } catch (e) {
+                            reject(e);
+                        }
+                    }
+                );
+            });
+        } catch (e) {
+            console.error(`ClipMaster: Error getting file size: ${e.message}`);
+            return 0;
+        }
+    }
+
+    async _checkDatabaseSize() {
+        if (!this._settings || this._isCleaning) return;
+
+        try {
+            const maxSizeMB = this._settings.get_int('max-db-size-mb');
+            if (maxSizeMB <= 0) return;
+
+            const maxSizeBytes = maxSizeMB * 1024 * 1024;
+            const currentSizeBytes = await this.getFileSize();
+
+            if (currentSizeBytes <= 0) return;
+
+            const usagePercent = (currentSizeBytes / maxSizeBytes) * 100;
+
+            if (currentSizeBytes >= maxSizeBytes) {
+                this._isCleaning = true;
+                try {
+                    const cleaned = this._enforceDatabaseSizeLimit(maxSizeBytes);
+                    if (cleaned > 0 && this._onNotification) {
+                        this._onNotification(
+                            _('Database Size Limit Reached'),
+                            _(`Database reached ${maxSizeMB}MB. Removed ${cleaned} oldest item(s) to free space.`)
+                        );
+                    }
+                } finally {
+                    this._isCleaning = false;
+                }
+            } else if (usagePercent >= 90) {
+                const now = Date.now();
+                if (now - this._lastWarningTime > this._warningCooldownMs) {
+                    this._lastWarningTime = now;
+                    if (this._onNotification) {
+                        const remainingMB = ((maxSizeBytes - currentSizeBytes) / (1024 * 1024)).toFixed(1);
+                        this._onNotification(
+                            _('Database Size Warning'),
+                            _(`Database is ${usagePercent.toFixed(0)}% full (${remainingMB}MB remaining). Old items will be automatically removed when limit is reached.`)
+                        );
+                    }
+                }
+            }
+        } catch (e) {
+            console.error(`ClipMaster: Error checking database size: ${e.message}`);
+            this._isCleaning = false;
+        }
+    }
+
+    _enforceDatabaseSizeLimit(maxSizeBytes) {
+        let removedCount = 0;
+
+        const favorites = this._items.filter(i => i.isFavorite);
+        let nonFavorites = this._items.filter(i => !i.isFavorite);
+
+        nonFavorites.sort((a, b) => (a.created || 0) - (b.created || 0));
+
+        while (nonFavorites.length > 0) {
+            const testItems = [...favorites, ...nonFavorites];
+            const testData = {
+                items: testItems,
+                lists: this._lists,
+                nextId: this._nextId
+            };
+
+            let testJsonStr = JSON.stringify(testData, null, 2);
+            if (this._encryption) {
+                testJsonStr = 'ENC:' + this._encryption.encrypt(testJsonStr);
+            }
+
+            const testSize = new TextEncoder().encode(testJsonStr).length;
+
+            if (testSize < maxSizeBytes * 0.95) {
+                break;
+            }
+
+            nonFavorites.shift();
+            removedCount++;
+
+            if (removedCount > 1000) {
+                console.log('ClipMaster: Safety limit reached while cleaning database');
+                break;
+            }
+        }
+
+        this._items = [...favorites, ...nonFavorites];
+
+        if (removedCount > 0) {
+            this._saveImmediate();
+        }
+
+        return removedCount;
+    }
+
+    destroy() {
+
+
+        if (this._timeoutManager) {
+            this._doSave();
+            this._timeoutManager.removeAll();
+            this._timeoutManager = null;
+        }
+    }
+
+    addItem(item) {
+        if (!this._items) return null;
+
+        const contentHash = HashUtils.hashContent(item.content);
+
+        // Check both main items and pending items for duplicates
+        const existing = this._items.find(i => i.contentHash === contentHash || i.hash === contentHash) ||
+            this._pendingItems.find(i => i.contentHash === contentHash || i.hash === contentHash);
+
+        let skipDuplicates = true;
+        if (this._settings) {
+            skipDuplicates = this._settings.get_boolean('skip-duplicates');
+            debugLog(`skip-duplicates setting = ${skipDuplicates}`);
+        }
+
+        debugLog(`existing=${!!existing}, skipDuplicates=${skipDuplicates}`);
+
+        if (existing && skipDuplicates) {
+            debugLog(`Skipping duplicate, updating existing item`);
+            existing.lastUsed = Date.now();
+            existing.useCount = (existing.useCount || 1) + 1;
+
+            // Only move to top if it's already in _items (main list)
+            if (this._items.includes(existing)) {
+                this._moveToTop(existing.id);
+            }
+
+            this._save();
+            return existing.id;
+        }
+
+        debugLog(`Adding new item (existing=${!!existing}, skipDuplicates=${skipDuplicates})`);
+
+        const uniqueHash = skipDuplicates ? contentHash : `${contentHash}_${Date.now()}`;
+
+        const newItem = {
+            id: this._nextId++,
+            type: item.type || ItemType.TEXT,
+            content: item.content,
+            thumbnail: item.thumbnail || null,  // Base64 thumbnail for IMAGE type
+            plainText: item.plainText || item.content,
+            preview: item.preview || (item.content || '').substring(0, 200),
+            title: item.title || null,
+            hash: uniqueHash,
+            contentHash: contentHash,
+            isFavorite: false,
+            listId: null,
+            sourceApp: item.sourceApp || null,
+            created: Date.now(),
+            lastUsed: Date.now(),
+            useCount: 1,
+            imageFormat: item.imageFormat || null,
+            metadata: item.metadata || null
+        };
+
+        if (this._isLoaded) {
+            this._items.unshift(newItem);
+        } else {
+            this._pendingItems.push(newItem);
+        }
+
+        this._save();
+        return newItem.id;
+    }
+
+    _moveToTop(itemId) {
+        const index = this._items.findIndex(i => i.id === itemId);
+        if (index > 0) {
+            const item = this._items.splice(index, 1)[0];
+            this._items.unshift(item);
+        }
+    }
+
+    getItems(options = {}) {
+        // Return mostly from _items. Pending items are not shown until loaded.
+        let items = [...this._items];
+
+        if (options.type) {
+            // CODE category includes both CODE and HTML types
+            if (options.type === ItemType.CODE) {
+                items = items.filter(i => i.type === ItemType.CODE || i.type === ItemType.HTML);
+            } else {
+                items = items.filter(i => i.type === options.type);
+            }
+        }
+
+        if (options.listId !== undefined) {
+            if (options.listId === -1) {
+                items = items.filter(i => i.isFavorite);
+            } else if (options.listId !== null) {
+                items = items.filter(i => i.listId === options.listId);
+            }
+        }
+
+        if (options.search) {
+            const query = options.search.toLowerCase();
+            items = items.filter(i =>
+                (i.content && i.content.toLowerCase().includes(query)) ||
+                (i.plainText && i.plainText.toLowerCase().includes(query)) ||
+                (i.title && i.title.toLowerCase().includes(query))
+            );
+        }
+
+        if (options.limit) {
+            items = items.slice(0, options.limit);
+        }
+
+        return items;
+    }
+
+    getItem(itemId) {
+        return this._items.find(i => i.id === itemId) || this._pendingItems.find(i => i.id === itemId);
+    }
+
+    updateItem(itemId, updates) {
+        const item = this._items.find(i => i.id === itemId) || this._pendingItems.find(i => i.id === itemId);
+        if (item) {
+            Object.assign(item, updates);
+            this._save();
+            return true;
+        }
+        return false;
+    }
+
+    deleteItem(itemId) {
+        let index = this._items.findIndex(i => i.id === itemId);
+        if (index >= 0) {
+            const item = this._items[index];
+
+            // Clean up image file if it's a file-based image
+            if (item.type === ItemType.IMAGE &&
+                item.metadata?.storedAs === 'file' &&
+                item.content &&
+                this._imageStorage) {
+                try {
+                    this._imageStorage.deleteImage(item.content);
+                    debugLog(`Deleted image file: ${item.content}`);
+                } catch (e) {
+                    console.error(`ClipMaster: Error deleting image file: ${e.message}`);
+                }
+            }
+
+            this._items.splice(index, 1);
+            this._save();
+            return true;
+        }
+
+        index = this._pendingItems.findIndex(i => i.id === itemId);
+        if (index >= 0) {
+            this._pendingItems.splice(index, 1);
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Enforce history size limit by removing oldest non-favorite items
+     * @param {number} maxItems - Maximum number of items to keep
+     */
+    enforceLimit(maxItems) {
+        if (!maxItems || maxItems <= 0) return;
+
+        const favorites = this._items.filter(i => i.isFavorite);
+        const nonFavorites = this._items.filter(i => !i.isFavorite);
+
+        if (nonFavorites.length > maxItems) {
+            // Sort by created date (oldest first)
+            nonFavorites.sort((a, b) => (a.created || 0) - (b.created || 0));
+
+            // Remove oldest items beyond the limit
+            const itemsToRemove = nonFavorites.slice(0, nonFavorites.length - maxItems);
+
+            for (const item of itemsToRemove) {
+                // Clean up image files for file-based images
+                if (item.type === ItemType.IMAGE &&
+                    item.metadata?.storedAs === 'file' &&
+                    item.content &&
+                    this._imageStorage) {
+                    try {
+                        this._imageStorage.deleteImage(item.content);
+                        debugLog(`enforceLimit: Deleted image file: ${item.content}`);
+                    } catch (e) {
+                        console.error(`ClipMaster: Error deleting image file during cleanup: ${e.message}`);
+                    }
+                }
+            }
+
+            // Keep favorites + remaining non-favorites within limit
+            const keptNonFavorites = nonFavorites.slice(nonFavorites.length - maxItems);
+            this._items = [...favorites, ...keptNonFavorites];
+
+            // Re-sort by lastUsed/created (newest first)
+            this._items.sort((a, b) => (b.lastUsed || b.created || 0) - (a.lastUsed || a.created || 0));
+
+            if (itemsToRemove.length > 0) {
+                debugLog(`enforceLimit: Removed ${itemsToRemove.length} old items`);
+                this._save();
+            }
+        }
+    }
+
+    toggleFavorite(itemId) {
+        const item = this._items.find(i => i.id === itemId);
+        if (item) {
+            item.isFavorite = !item.isFavorite;
+            this._save();
+            return item.isFavorite;
+        }
+        return false;
+    }
+
+    clearHistory(keepFavorites = true) {
+        if (keepFavorites) {
+            this._items = this._items.filter(i => i.isFavorite);
+        } else {
+            this._items = [];
+        }
+        this._pendingItems = []; // Clear pending too
+        this._save();
+    }
+
+    requestsSave() {
+        this._save();
+    }
+
+    // ... lists and import/export methods remain mostly same but logging fixed ...
+
+    getLists() {
+        return this._lists;
+    }
+
+    createList(name, color = null) {
+        const list = {
+            id: this._lists.length > 0 ? Math.max(...this._lists.map(l => l.id)) + 1 : 1,
+            name: name,
+            color: color,
+            created: Date.now()
+        };
+        this._lists.push(list);
+        this._save();
+        return list.id;
+    }
+
+    deleteList(listId) {
+        this._items.forEach(item => {
+            if (item.listId === listId) {
+                item.listId = null;
+            }
+        });
+
+        this._lists = this._lists.filter(l => l.id !== listId);
+        this._save();
+    }
+
+    addItemToList(itemId, listId) {
+        const item = this._items.find(i => i.id === itemId);
+        if (item) {
+            item.listId = listId;
+            this._save();
+        }
+    }
+
+    exportData() {
+        return JSON.stringify({
+            version: 1,
+            items: this._items,
+            lists: this._lists,
+            exported: new Date().toISOString()
+        }, null, 2);
+    }
+
+    importData(jsonString) {
+        try {
+            const data = JSON.parse(jsonString);
+            if (data.items) {
+                data.items.forEach(item => {
+                    const hash = HashUtils.hashContent(item.content);
+                    if (!this._items.find(i => i.hash === hash)) {
+                        item.id = this._nextId++;
+                        this._items.push(item);
+                    }
+                });
+            }
+            if (data.lists) {
+                data.lists.forEach(list => {
+                    if (!this._lists.find(l => l.name === list.name)) {
+                        list.id = this._lists.length > 0 ? Math.max(...this._lists.map(l => l.id)) + 1 : 1;
+                        this._lists.push(list);
+                    }
+                });
+            }
+            this._save();
+            return true;
+        } catch (e) {
+            console.error(`ClipMaster: Import error: ${e.message}`);
+            return false;
+        }
+    }
+
+    getStats() {
+        const stats = {
+            total: this._items.length,
+            favorites: this._items.filter(i => i.isFavorite).length,
+            byType: {}
+        };
+
+        this._items.forEach(item => {
+            stats.byType[item.type] = (stats.byType[item.type] || 0) + 1;
+        });
+
+        return stats;
+    }
+}

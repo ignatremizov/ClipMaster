@@ -490,6 +490,65 @@ export default class ClipMasterPreferences extends ExtensionPreferences {
             defaultBadge.label = useCustomRow.active ? '' : '✓ Active';
         });
 
+        // Database file size info
+        const dbSizeRow = new Adw.ActionRow({
+            title: _('Database File Size'),
+            subtitle: _('Calculating...')
+        });
+
+        // Calculate database size
+        try {
+            const dbPath = currentPath || defaultPath;
+            const dbFile = Gio.File.new_for_path(dbPath);
+            if (dbFile.query_exists(null)) {
+                const dbInfo = dbFile.query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null);
+                const dbSizeBytes = dbInfo.get_size();
+                const dbSizeMB = (dbSizeBytes / (1024 * 1024)).toFixed(2);
+                const dbSizeKB = (dbSizeBytes / 1024).toFixed(2);
+
+                if (dbSizeBytes > 1024 * 1024) {
+                    dbSizeRow.subtitle = `${dbSizeMB} MB`;
+                } else {
+                    dbSizeRow.subtitle = `${dbSizeKB} KB`;
+                }
+            } else {
+                dbSizeRow.subtitle = _('Database not found');
+            }
+        } catch (e) {
+            dbSizeRow.subtitle = _('Unable to calculate');
+        }
+
+        // Add refresh button
+        const refreshSizeButton = new Gtk.Button({
+            icon_name: 'view-refresh-symbolic',
+            valign: Gtk.Align.CENTER,
+            tooltip_text: _('Refresh size')
+        });
+        refreshSizeButton.connect('clicked', () => {
+            try {
+                const dbPath = settings.get_string('storage-path') || defaultPath;
+                const dbFile = Gio.File.new_for_path(dbPath);
+                if (dbFile.query_exists(null)) {
+                    const dbInfo = dbFile.query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null);
+                    const dbSizeBytes = dbInfo.get_size();
+                    const dbSizeMB = (dbSizeBytes / (1024 * 1024)).toFixed(2);
+                    const dbSizeKB = (dbSizeBytes / 1024).toFixed(2);
+
+                    if (dbSizeBytes > 1024 * 1024) {
+                        dbSizeRow.subtitle = `${dbSizeMB} MB`;
+                    } else {
+                        dbSizeRow.subtitle = `${dbSizeKB} KB`;
+                    }
+                } else {
+                    dbSizeRow.subtitle = _('Database not found');
+                }
+            } catch (e) {
+                dbSizeRow.subtitle = _('Unable to calculate');
+            }
+        });
+        dbSizeRow.add_suffix(refreshSizeButton);
+        storageGroup.add(dbSizeRow);
+
         // Security Group
         const securityGroup = new Adw.PreferencesGroup({
             title: _('Security'),
@@ -675,7 +734,7 @@ export default class ClipMasterPreferences extends ExtensionPreferences {
 
         const versionRow = new Adw.ActionRow({
             title: _('Version'),
-            subtitle: '1.1.1'
+            subtitle: '1.3'
         });
         aboutGroup.add(versionRow);
 

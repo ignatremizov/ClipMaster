@@ -11,6 +11,7 @@ import { Extension, gettext as _ } from 'resource:///org/gnome/shell/extensions/
 import { TimeoutManager, FileUtils, HashUtils } from '../Util/Utils.js';
 import { ItemType, debugLog } from '../Util/Constants.js';
 import { SimpleEncryption } from '../Util/Encryption.js';
+import { ImageStorage } from '../Util/ImageStorage.js';
 
 export class ClipboardDatabase {
     constructor(storagePath, settings, onNotification = null) {
@@ -36,6 +37,9 @@ export class ClipboardDatabase {
         this._saveDebounceMs = 500;
 
         this._encryption = null;
+
+        // Initialize image storage for cleanup operations
+        this._imageStorage = new ImageStorage();
 
         // Don't call async init here, caller must call init()
     }
@@ -356,6 +360,7 @@ export class ClipboardDatabase {
             id: this._nextId++,
             type: item.type || ItemType.TEXT,
             content: item.content,
+            thumbnail: item.thumbnail || null,  // Base64 thumbnail for IMAGE type
             plainText: item.plainText || item.content,
             preview: item.preview || (item.content || '').substring(0, 200),
             title: item.title || null,
@@ -394,7 +399,12 @@ export class ClipboardDatabase {
         let items = [...this._items];
 
         if (options.type) {
-            items = items.filter(i => i.type === options.type);
+            // CODE category includes both CODE and HTML types
+            if (options.type === ItemType.CODE) {
+                items = items.filter(i => i.type === ItemType.CODE || i.type === ItemType.HTML);
+            } else {
+                items = items.filter(i => i.type === options.type);
+            }
         }
 
         if (options.listId !== undefined) {
@@ -438,6 +448,21 @@ export class ClipboardDatabase {
     deleteItem(itemId) {
         let index = this._items.findIndex(i => i.id === itemId);
         if (index >= 0) {
+            const item = this._items[index];
+
+            // Clean up image file if it's a file-based image
+            if (item.type === ItemType.IMAGE &&
+                item.metadata?.storedAs === 'file' &&
+                item.content &&
+                this._imageStorage) {
+                try {
+                    this._imageStorage.deleteImage(item.content);
+                    debugLog(`Deleted image file: ${item.content}`);
+                } catch (e) {
+                    console.error(`ClipMaster: Error deleting image file: ${e.message}`);
+                }
+            }
+
             this._items.splice(index, 1);
             this._save();
             return true;
@@ -450,6 +475,52 @@ export class ClipboardDatabase {
         }
 
         return false;
+    }
+
+    /**
+     * Enforce history size limit by removing oldest non-favorite items
+     * @param {number} maxItems - Maximum number of items to keep
+     */
+    enforceLimit(maxItems) {
+        if (!maxItems || maxItems <= 0) return;
+
+        const favorites = this._items.filter(i => i.isFavorite);
+        const nonFavorites = this._items.filter(i => !i.isFavorite);
+
+        if (nonFavorites.length > maxItems) {
+            // Sort by created date (oldest first)
+            nonFavorites.sort((a, b) => (a.created || 0) - (b.created || 0));
+
+            // Remove oldest items beyond the limit
+            const itemsToRemove = nonFavorites.slice(0, nonFavorites.length - maxItems);
+
+            for (const item of itemsToRemove) {
+                // Clean up image files for file-based images
+                if (item.type === ItemType.IMAGE &&
+                    item.metadata?.storedAs === 'file' &&
+                    item.content &&
+                    this._imageStorage) {
+                    try {
+                        this._imageStorage.deleteImage(item.content);
+                        debugLog(`enforceLimit: Deleted image file: ${item.content}`);
+                    } catch (e) {
+                        console.error(`ClipMaster: Error deleting image file during cleanup: ${e.message}`);
+                    }
+                }
+            }
+
+            // Keep favorites + remaining non-favorites within limit
+            const keptNonFavorites = nonFavorites.slice(nonFavorites.length - maxItems);
+            this._items = [...favorites, ...keptNonFavorites];
+
+            // Re-sort by lastUsed/created (newest first)
+            this._items.sort((a, b) => (b.lastUsed || b.created || 0) - (a.lastUsed || a.created || 0));
+
+            if (itemsToRemove.length > 0) {
+                debugLog(`enforceLimit: Removed ${itemsToRemove.length} old items`);
+                this._save();
+            }
+        }
     }
 
     toggleFavorite(itemId) {

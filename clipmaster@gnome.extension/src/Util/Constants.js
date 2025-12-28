@@ -9,7 +9,8 @@ export const ItemType = {
     IMAGE: 'image',
     FILE: 'file',
     URL: 'url',
-    COLOR: 'color'
+    COLOR: 'color',
+    CODE: 'code'
 };
 
 export let _debugMode = false;

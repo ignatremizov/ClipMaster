@@ -10,6 +10,7 @@ import Meta from 'gi://Meta';
 
 import { SignalManager, TimeoutManager, SettingsCache, HashUtils, ValidationUtils } from '../Util/Utils.js';
 import { ItemType, debugLog } from '../Util/Constants.js';
+import { ImageStorage } from '../Util/ImageStorage.js';
 
 export class ClipboardMonitor {
     constructor(settings, database, onNewItem) {
@@ -27,6 +28,9 @@ export class ClipboardMonitor {
         this._signalManager = new SignalManager();
         this._timeoutManager = new TimeoutManager();
         this._settingsCache = new SettingsCache(settings);
+
+        // Initialize image storage for file-based image handling
+        this._imageStorage = new ImageStorage();
 
         this._primaryGracePeriodEnd = 0;
         this._primaryGracePeriodMs = 5000;
@@ -345,32 +349,42 @@ export class ClipboardMonitor {
                                     this._lastImageHash = hash;
 
                                     if (this._cachedSettings && this._cachedSettings.trackImages) {
-                                        const base64 = GLib.base64_encode(contents);
+                                        // Use ImageStorage for file-based storage with thumbnails
+                                        const storageResult = await this._imageStorage.saveImage(contents, 'png', hash);
 
-                                        const item = {
-                                            type: ItemType.IMAGE,
-                                            content: base64,
-                                            plainText: `[Image ${timestamp}]`,
-                                            preview: `Image (${Math.round(size / 1024)}KB)`,
-                                            imageFormat: 'png',
-                                            metadata: {
-                                                size: size,
-                                                hash: hash,
-                                                storedAs: 'base64'
+                                        if (storageResult) {
+                                            const item = {
+                                                type: ItemType.IMAGE,
+                                                content: storageResult.imagePath,  // File path instead of base64
+                                                thumbnail: storageResult.thumbnail,  // Base64 thumbnail for popup
+                                                plainText: `[Image ${timestamp}]`,
+                                                preview: `Image (${Math.round(storageResult.originalSize / 1024)}KB)`,
+                                                imageFormat: storageResult.format,
+                                                metadata: {
+                                                    size: storageResult.originalSize,
+                                                    savedSize: storageResult.savedSize,
+                                                    thumbnailSize: storageResult.thumbnailSize,
+                                                    width: storageResult.width,
+                                                    height: storageResult.height,
+                                                    hash: hash,
+                                                    storedAs: 'file'  // Indicates file-based storage
+                                                }
+                                            };
+
+                                            if (!this._isStopped && this._database) {
+                                                const itemId = this._database.addItem(item);
+                                                this._database.enforceLimit(this._cachedSettings.historySize);
+
+                                                if (this._onNewItem && !this._isStopped) {
+                                                    this._onNewItem(itemId);
+                                                }
                                             }
-                                        };
 
-                                        if (!this._isStopped && this._database) {
-                                            const itemId = this._database.addItem(item);
-                                            this._database.enforceLimit(this._cachedSettings.historySize);
-
-                                            if (this._onNewItem && !this._isStopped) {
-                                                this._onNewItem(itemId);
-                                            }
+                                            imageSuccessfullyAdded = true;
+                                            debugLog(`Image successfully saved to file: ${storageResult.imagePath}`);
+                                        } else {
+                                            debugLog(`ImageStorage.saveImage failed, image not saved`);
                                         }
-
-                                        imageSuccessfullyAdded = true;
-                                        debugLog(`Image successfully added via native API`);
                                     } else {
                                         debugLog(`Image found but trackImages=false`);
                                         imageSuccessfullyAdded = true;
@@ -431,6 +445,8 @@ export class ClipboardMonitor {
             type = ItemType.HTML;
         } else if (trimmed.startsWith('file://')) {
             type = ItemType.FILE;
+        } else if (this._isCodeSnippet(trimmed)) {
+            type = ItemType.CODE;
         }
 
         const item = {
@@ -485,6 +501,106 @@ export class ClipboardMonitor {
         return imageExtensions.some(ext => lowerText.endsWith(ext));
     }
 
+    /**
+     * Detect if text is a code snippet (programming languages, shell commands, scripts)
+     */
+    _isCodeSnippet(text) {
+        if (!text || text.length < 5) return false;
+
+        const lines = text.split('\n');
+        const firstLine = lines[0].trim();
+        const trimmedText = text.trim();
+
+        // Shebang detection (#!/bin/bash, #!/usr/bin/env python, etc.)
+        if (firstLine.startsWith('#!')) return true;
+
+        // Common shell/terminal patterns
+        const shellPatterns = [
+            /^\s*(sudo|apt|apt-get|dnf|yum|pacman|brew|npm|yarn|pnpm|pip|pip3|python|python3|node|cargo|go|rustc|gcc|g\+\+|make|cmake|git|docker|kubectl|helm|terraform|ansible|ssh|scp|curl|wget|chmod|chown|mkdir|rm|cp|mv|ls|cd|cat|grep|sed|awk|find|tar|zip|unzip)\s+/im,
+            /^\s*\$\s+\w+/m,  // $ command
+            /^\s*PS\s*\w*>/m,   // PowerShell prompt style
+            /^\s*#\s*(install|update|run|build|test|deploy)/im
+        ];
+
+        for (const pattern of shellPatterns) {
+            if (pattern.test(trimmedText)) return true;
+        }
+
+        // PowerShell patterns
+        const powershellPatterns = [
+            /^\s*(Get-|Set-|New-|Remove-|Invoke-|Start-|Stop-|Out-|Write-|Read-|Import-|Export-)\w+/im,
+            /\$\w+\s*=\s*/,  // $variable = value
+            /\|\s*(Where-Object|Select-Object|ForEach-Object|Sort-Object)/i
+        ];
+
+        for (const pattern of powershellPatterns) {
+            if (pattern.test(trimmedText)) return true;
+        }
+
+        // Programming language patterns
+        const codePatterns = [
+            // JavaScript/TypeScript
+            /^\s*(const|let|var|function|class|import|export|async|await|=>\s*{|\(\)\s*=>)/m,
+            /^\s*(if|else|for|while|switch|try|catch|throw|return)\s*[({]/m,
+            /\bconsole\.(log|error|warn|info|debug)\s*\(/,
+            /\bmodule\.exports\s*=/,
+            /\brequire\s*\(['"]/,
+
+            // Python
+            /^\s*(def|class|import|from|if __name__|@\w+|async def|lambda)\s+/m,
+            /^\s*print\s*\(/m,
+            /^\s*(for|while|if|elif|else|try|except|with|raise|return|yield)\s+/m,
+
+            // Rust
+            /^\s*(fn|let|mut|impl|struct|enum|trait|pub|mod|use|crate|match)\s+/m,
+            /^\s*println!\s*\(/m,
+
+            // Go
+            /^\s*(func|package|import|type|struct|interface|go|defer|chan)\s+/m,
+            /^\s*fmt\.(Print|Sprintf|Errorf)/m,
+
+            // Java/Kotlin/C#
+            /^\s*(public|private|protected|static|void|class|interface|abstract|override|final)\s+/m,
+            /^\s*System\.(out|err)\./m,
+            /^\s*Console\.(Write|Read)/m,
+
+            // C/C++
+            /^\s*#\s*(include|define|ifdef|ifndef|pragma)\s+/m,
+            /^\s*(int|void|char|float|double|long|short|unsigned|signed)\s+\w+\s*[;(]/m,
+            /^\s*printf\s*\(/m,
+            /^\s*std::/m,
+
+            // SQL
+            /^\s*(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|FROM|WHERE|JOIN|ORDER BY|GROUP BY)\s+/im,
+
+            // JSON/YAML-like (but multiline)
+            /^{\s*"\w+":\s*/m,
+            /^\[\s*{\s*"\w+":/m,
+
+            // CSS
+            /^\s*[.#\w-]+\s*{\s*[\w-]+\s*:/m,
+            /^\s*@(media|import|keyframes|font-face)\s+/m
+        ];
+
+        for (const pattern of codePatterns) {
+            if (pattern.test(trimmedText)) return true;
+        }
+
+        // Multi-line with common code indicators
+        if (lines.length >= 3) {
+            // Check for consistent indentation (likely code)
+            const indentedLines = lines.filter(l => l.match(/^[\t ]{2,}/));
+            if (indentedLines.length >= lines.length * 0.3) {
+                // Has brackets, semicolons, or common operators
+                if (/[{}\[\];]|=>|->|::|\+=|-=|\*=|\/=|==|!=|&&|\|\|/.test(trimmedText)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     async _processImageFile(filePath, selectionType = 'CLIPBOARD') {
         if (this._isStopped || !this._database) return;
 
@@ -513,7 +629,6 @@ export class ClipboardMonitor {
 
             this._lastImageHash = hash;
             const timestamp = Date.now();
-            const base64 = GLib.base64_encode(contents);
 
             const originalExt = fullPath.substring(fullPath.lastIndexOf('.'));
             const ext = originalExt.toLowerCase();
@@ -524,17 +639,30 @@ export class ClipboardMonitor {
             else if (ext === '.bmp') imageFormat = 'bmp';
             else if (ext === '.svg') imageFormat = 'svg';
 
+            // Use ImageStorage for file-based storage with thumbnails
+            const storageResult = await this._imageStorage.saveImage(contents, imageFormat, hash);
+
+            if (!storageResult) {
+                debugLog(`ImageStorage.saveImage failed for file: ${fullPath}`);
+                return;
+            }
+
             const item = {
                 type: ItemType.IMAGE,
-                content: base64,
+                content: storageResult.imagePath,  // File path instead of base64
+                thumbnail: storageResult.thumbnail,  // Base64 thumbnail for popup
                 plainText: `[Image from ${GLib.path_get_basename(fullPath)}]`,
-                preview: `Image (${Math.round(size / 1024)}KB)`,
-                imageFormat: imageFormat,
+                preview: `Image (${Math.round(storageResult.originalSize / 1024)}KB)`,
+                imageFormat: storageResult.format,
                 metadata: {
-                    size: size,
+                    size: storageResult.originalSize,
+                    savedSize: storageResult.savedSize,
+                    thumbnailSize: storageResult.thumbnailSize,
+                    width: storageResult.width,
+                    height: storageResult.height,
                     originalPath: fullPath,
                     hash: hash,
-                    storedAs: 'base64'
+                    storedAs: 'file'  // Indicates file-based storage
                 }
             };
 
@@ -560,19 +688,25 @@ export class ClipboardMonitor {
         this._clipboard.set_text(St.ClipboardType.CLIPBOARD, text);
     }
 
-    copyImageToClipboard(imageContent) {
+    async copyImageToClipboard(imageContent) {
         try {
             let imageData = null;
 
             if (imageContent.includes('/') && !imageContent.startsWith('data:')) {
-                // Handle file path - we'd need to read it to get bytes
-                // But this is synchronous, better to just avoid this if we can't use spawn?
-                // Or use set_content?
-                // For now, I'll log a warning that this feature requires revision
-                console.warn("ClipMaster: Copying image file to clipboard not fully supported without spawn yet.");
-                return;
+                // Handle file path - load image from disk
+                try {
+                    imageData = await this._imageStorage.loadImage(imageContent);
+                    if (!imageData) {
+                        console.warn(`ClipMaster: Could not load image from: ${imageContent}`);
+                        return;
+                    }
+                    debugLog(`Loaded image from file: ${imageContent}`);
+                } catch (e) {
+                    console.error(`ClipMaster: Error loading image file: ${e.message}`);
+                    return;
+                }
             } else {
-                // Base64
+                // Base64 (legacy support)
                 try {
                     imageData = GLib.base64_decode(imageContent);
                 } catch (e) {
@@ -584,6 +718,7 @@ export class ClipboardMonitor {
             if (imageData) {
                 const bytes = GLib.Bytes.new(imageData);
                 this._clipboard.set_content(St.ClipboardType.CLIPBOARD, 'image/png', bytes);
+                debugLog(`Image copied to clipboard successfully`);
             }
         } catch (e) {
             console.error(`ClipMaster: Error copying image to clipboard: ${e.message}`);

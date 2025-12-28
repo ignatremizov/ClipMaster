@@ -4,6 +4,8 @@
  */
 
 import GObject from 'gi://GObject';
+import GLib from 'gi://GLib';
+import Gio from 'gi://Gio';
 import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 
@@ -94,15 +96,55 @@ export const ClipMasterIndicator = GObject.registerClass(
                 if (!this._recentSection) return;
 
                 let preview = item.preview || item.content || '';
-                if (item.type === ItemType.IMAGE) {
-                    preview = `🖼️ ${item.preview || 'Image'}`;
+
+                // Create menu item
+                const menuItem = new PopupMenu.PopupBaseMenuItem();
+
+                // Add thumbnail for image items
+                if (item.type === ItemType.IMAGE && item.thumbnail) {
+                    try {
+                        const thumbData = GLib.base64_decode(item.thumbnail);
+                        const bytes = new GLib.Bytes(thumbData);
+                        const gicon = Gio.BytesIcon.new(bytes);
+
+                        const thumbIcon = new St.Icon({
+                            gicon: gicon,
+                            icon_size: 24,
+                            style_class: 'clipmaster-indicator-thumbnail'
+                        });
+                        menuItem.add_child(thumbIcon);
+                    } catch (e) {
+                        // Fallback to generic icon
+                        const fallbackIcon = new St.Icon({
+                            icon_name: 'image-x-generic-symbolic',
+                            icon_size: 16,
+                            style_class: 'popup-menu-icon'
+                        });
+                        menuItem.add_child(fallbackIcon);
+                    }
+                    preview = item.preview || 'Image';
+                } else if (item.type === ItemType.IMAGE) {
+                    // No thumbnail available, use generic icon
+                    const imgIcon = new St.Icon({
+                        icon_name: 'image-x-generic-symbolic',
+                        icon_size: 16,
+                        style_class: 'popup-menu-icon'
+                    });
+                    menuItem.add_child(imgIcon);
+                    preview = item.preview || 'Image';
                 }
+
                 if (preview.length > 50) {
                     preview = preview.substring(0, 50) + '...';
                 }
                 preview = preview.replace(/\n/g, ' ');
 
-                const menuItem = new PopupMenu.PopupMenuItem(preview);
+                const label = new St.Label({
+                    text: preview,
+                    x_expand: true
+                });
+                menuItem.add_child(label);
+
                 menuItem.connect('activate', () => {
                     // Safety check for disposed extension components
                     if (!this._extension || !this._extension._monitor) return;

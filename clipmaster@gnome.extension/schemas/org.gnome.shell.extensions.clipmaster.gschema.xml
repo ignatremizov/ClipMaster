@@ -4,7 +4,7 @@
     
     <!-- Keyboard Shortcuts -->
     <key name="toggle-popup" type="as">
-      <default>['&lt;Super&gt;v']</default>
+      <default>['&lt;Shift&gt;&lt;Super&gt;v']</default>
       <summary>Toggle clipboard popup</summary>
       <description>Keyboard shortcut to show/hide the clipboard popup</description>
     </key>
@@ -198,6 +198,13 @@
       <default>''</default>
       <summary>Encryption key</summary>
       <description>Auto-generated encryption key (do not modify manually)</description>
+    </key>
+    
+    <!-- Pinned Lists -->
+    <key name="pinned-lists" type="as">
+      <default>[]</default>
+      <summary>Pinned lists</summary>
+      <description>List IDs to show in filter bar for quick access (max 2)</description>
     </key>
     
     <!-- Debug Settings -->

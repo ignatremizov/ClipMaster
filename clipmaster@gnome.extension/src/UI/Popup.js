@@ -10,6 +10,7 @@ import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 import Pango from 'gi://Pango';
 import Shell from 'gi://Shell';
+import GdkPixbuf from 'gi://GdkPixbuf';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as ModalDialog from 'resource:///org/gnome/shell/ui/modalDialog.js';
@@ -21,6 +22,7 @@ import { Extension, gettext as _ } from 'resource:///org/gnome/shell/extensions/
 
 import { SignalManager, TimeoutManager } from '../Util/Utils.js';
 import { ItemType, debugLog } from '../Util/Constants.js';
+import { QrCodeGenerator, QrEcc } from '../Util/QrCodeGenerator.js';
 
 export const ClipboardPopup = GObject.registerClass(
     class ClipboardPopup extends St.BoxLayout {
@@ -196,14 +198,24 @@ export const ClipboardPopup = GObject.registerClass(
             });
             this._header.add_child(title);
 
+            // Simple tooltip label (shared by all buttons)
+            this._tooltip = new St.Label({
+                style_class: 'clipmaster-tooltip',
+                visible: false
+            });
+            Main.uiGroup.add_child(this._tooltip);
+
             this._plainTextButton = new St.Button({
                 style_class: 'clipmaster-toggle-button',
                 child: new St.Icon({
                     icon_name: 'text-x-generic-symbolic',
                     icon_size: 16
                 }),
-                can_focus: false
+                can_focus: false,
+                track_hover: true
             });
+            this._plainTextButton._tooltipText = _('Paste as plain text');
+            this._plainTextButton.connect('notify::hover', (btn) => this._onButtonHover(btn));
             this._plainTextButton.connect('button-press-event', () => {
                 this._plainTextMode = !this._plainTextMode;
                 if (this._plainTextMode) {
@@ -222,8 +234,11 @@ export const ClipboardPopup = GObject.registerClass(
                     icon_name: 'view-pin-symbolic',
                     icon_size: 16
                 }),
-                can_focus: false
+                can_focus: false,
+                track_hover: true
             });
+            this._pinButton._tooltipText = _('Pin popup (keep open)');
+            this._pinButton.connect('notify::hover', (btn) => this._onButtonHover(btn));
             this._pinButton.connect('button-press-event', () => {
                 this._isPinned = !this._isPinned;
                 if (this._isPinned) {
@@ -244,15 +259,13 @@ export const ClipboardPopup = GObject.registerClass(
                     icon_name: 'list-add-symbolic',
                     icon_size: 16
                 }),
-                can_focus: false
+                can_focus: false,
+                track_hover: true
             });
+            this._addListButton._tooltipText = _('Create new list');
+            this._addListButton.connect('notify::hover', (btn) => this._onButtonHover(btn));
             this._addListButton.connect('button-press-event', () => {
                 debugLog('Add list button pressed');
-                this._showCreateListDialog();
-                return Clutter.EVENT_STOP;
-            });
-            this._addListButton.connect('clicked', () => {
-                debugLog('Add list button clicked');
                 this._showCreateListDialog();
                 return Clutter.EVENT_STOP;
             });
@@ -264,15 +277,13 @@ export const ClipboardPopup = GObject.registerClass(
                     icon_name: 'window-close-symbolic',
                     icon_size: 16
                 }),
-                can_focus: false
+                can_focus: false,
+                track_hover: true
             });
+            this._closeButton._tooltipText = _('Close');
+            this._closeButton.connect('notify::hover', (btn) => this._onButtonHover(btn));
             this._closeButton.connect('button-press-event', () => {
                 debugLog('Close button pressed');
-                this._extension.hidePopup();
-                return Clutter.EVENT_STOP;
-            });
-            this._closeButton.connect('clicked', () => {
-                debugLog('Close button clicked');
                 this._extension.hidePopup();
                 return Clutter.EVENT_STOP;
             });
@@ -381,6 +392,22 @@ export const ClipboardPopup = GObject.registerClass(
             this._urlButton.connect('clicked', () => { this._setFilter(null, ItemType.URL); return Clutter.EVENT_STOP; });
             filterBar.add_child(this._urlButton);
 
+            this._codeButton = new St.Button({
+                style_class: 'clipmaster-filter-button',
+                label: '</>',
+                can_focus: false
+            });
+            this._codeButton.connect('clicked', () => { this._setFilter(null, ItemType.CODE); return Clutter.EVENT_STOP; });
+            filterBar.add_child(this._codeButton);
+
+            // Pinned list buttons container (separate row)
+            this._pinnedListButtons = [];
+            this._pinnedBar = new St.BoxLayout({
+                style_class: 'clipmaster-pinned-bar',
+                x_expand: true,
+                visible: false  // Hidden initially, shown when there are pinned lists
+            });
+
             this._listsButton = new St.Button({
                 style_class: 'clipmaster-filter-button',
                 label: _('Lists ▾'),
@@ -389,7 +416,14 @@ export const ClipboardPopup = GObject.registerClass(
             this._listsButton.connect('clicked', () => { this._showListsMenu(); return Clutter.EVENT_STOP; });
             filterBar.add_child(this._listsButton);
 
+            // Store filterBar reference for later updates
+            this._filterBar = filterBar;
+
             this.add_child(filterBar);
+            this.add_child(this._pinnedBar);
+
+            // Initial refresh of pinned lists
+            this._refreshPinnedLists();
 
             this._scrollView = new St.ScrollView({
                 style_class: 'clipmaster-scroll',
@@ -482,12 +516,48 @@ export const ClipboardPopup = GObject.registerClass(
             }
 
             const menu = new PopupMenu.PopupMenu(this._listsButton, 0.0, St.Side.TOP);
+            const pinnedLists = this._settings.get_strv('pinned-lists') || [];
 
             lists.forEach(list => {
                 const menuItem = new PopupMenu.PopupMenuItem(list.name);
                 menuItem.connect('activate', () => {
                     this._setFilter(list.id);
                 });
+
+                // Pin/Unpin button
+                const isPinned = pinnedLists.includes(String(list.id));
+                const pinButton = new St.Button({
+                    style_class: 'clipmaster-list-pin-button',
+                    child: new St.Icon({
+                        icon_name: isPinned ? 'starred-symbolic' : 'non-starred-symbolic',
+                        icon_size: 14
+                    }),
+                    can_focus: false,
+                    reactive: true
+                });
+                pinButton.connect('button-press-event', (actor, event) => {
+                    if (event.get_button() !== 1) return Clutter.EVENT_PROPAGATE;
+
+                    const currentPinned = this._settings.get_strv('pinned-lists') || [];
+                    const listIdStr = String(list.id);
+
+                    if (currentPinned.includes(listIdStr)) {
+                        // Unpin
+                        const newPinned = currentPinned.filter(id => id !== listIdStr);
+                        this._settings.set_strv('pinned-lists', newPinned);
+                        pinButton.child.icon_name = 'non-starred-symbolic';
+                    } else {
+                        // Pin (no limit - will show in separate row)
+                        currentPinned.push(listIdStr);
+                        this._settings.set_strv('pinned-lists', currentPinned);
+                        pinButton.child.icon_name = 'starred-symbolic';
+                    }
+
+                    // Refresh pinned list buttons
+                    this._refreshPinnedLists();
+                    return Clutter.EVENT_STOP;
+                });
+                menuItem.add_child(pinButton);
 
                 const deleteButton = new St.Button({
                     style_class: 'clipmaster-list-delete-button',
@@ -504,8 +574,14 @@ export const ClipboardPopup = GObject.registerClass(
                         this._showConfirmDialog(
                             _('Are you sure you want to delete the list "%s"? This action cannot be undone.').format(listName),
                             () => {
+                                // Also remove from pinned if pinned
+                                const pinned = this._settings.get_strv('pinned-lists') || [];
+                                const newPinned = pinned.filter(id => id !== String(list.id));
+                                this._settings.set_strv('pinned-lists', newPinned);
+
                                 debugLog(`Deleting list: ${listName} (ID: ${list.id})`);
                                 this._database.deleteList(list.id);
+                                this._refreshPinnedLists();
                                 this._loadItems();
                                 Main.notify('ClipMaster', _('List deleted'));
                             }
@@ -527,6 +603,57 @@ export const ClipboardPopup = GObject.registerClass(
             });
         }
 
+        _refreshPinnedLists() {
+            // Remove old pinned list buttons
+            for (const btn of this._pinnedListButtons) {
+                if (btn.get_parent()) {
+                    btn.get_parent().remove_child(btn);
+                }
+                btn.destroy();
+            }
+            this._pinnedListButtons = [];
+
+            // Get pinned list IDs
+            const pinnedIds = this._settings.get_strv('pinned-lists') || [];
+
+            // Hide bar if no pinned lists
+            if (pinnedIds.length === 0) {
+                this._pinnedBar.visible = false;
+                return;
+            }
+
+            // Get lists from database
+            const allLists = this._database.getLists();
+            const listsMap = new Map(allLists.map(l => [String(l.id), l]));
+
+            // Create buttons for all pinned lists
+            let validPinnedCount = 0;
+            pinnedIds.forEach(listIdStr => {
+                const list = listsMap.get(listIdStr);
+                if (!list) return; // List was deleted
+
+                validPinnedCount++;
+
+                const btn = new St.Button({
+                    style_class: 'clipmaster-filter-button clipmaster-pinned-list',
+                    label: list.name.length > 10 ? list.name.substring(0, 10) + '…' : list.name,
+                    can_focus: false
+                });
+                btn._listId = list.id;
+
+                btn.connect('clicked', () => {
+                    this._setFilter(list.id);
+                    return Clutter.EVENT_STOP;
+                });
+
+                this._pinnedListButtons.push(btn);
+                this._pinnedBar.add_child(btn);
+            });
+
+            // Show bar only if there are valid pinned lists
+            this._pinnedBar.visible = validPinnedCount > 0;
+        }
+
         _startDrag(event) {
             debugLog(`_startDrag called`);
 
@@ -539,6 +666,7 @@ export const ClipboardPopup = GObject.registerClass(
             this._dragging = true;
             [this._dragStartX, this._dragStartY] = event.get_coords();
             [this._dragStartPosX, this._dragStartPosY] = this.get_position();
+            this._lastDragUpdate = 0;  // Throttle timestamp
 
             debugLog(`Drag start coords: (${this._dragStartX}, ${this._dragStartY})`);
             debugLog(`Popup position: (${this._dragStartPosX}, ${this._dragStartPosY})`);
@@ -555,10 +683,17 @@ export const ClipboardPopup = GObject.registerClass(
                 global.stage,
                 'motion-event',
                 (actor, motionEvent) => {
-                    // Safety check - don't block if not dragging or popup hidden
+                    // Safety check - don't process if not dragging or popup hidden
                     if (!this._dragging || !this._isShowing || !this.visible) {
                         return Clutter.EVENT_PROPAGATE;
                     }
+
+                    // Throttle updates to ~60fps (16ms) for smoother performance
+                    const now = Date.now();
+                    if (now - this._lastDragUpdate < 16) {
+                        return Clutter.EVENT_PROPAGATE;
+                    }
+                    this._lastDragUpdate = now;
 
                     const [currentX, currentY] = motionEvent.get_coords();
                     if (isNaN(currentX) || isNaN(currentY)) return Clutter.EVENT_PROPAGATE;
@@ -570,8 +705,8 @@ export const ClipboardPopup = GObject.registerClass(
                         this.set_position(newX, newY);
                     }
 
-                    // Only stop event during active drag
-                    return Clutter.EVENT_STOP;
+                    // Propagate event to not block other input
+                    return Clutter.EVENT_PROPAGATE;
                 },
                 'drag-motion'
             );
@@ -603,6 +738,22 @@ export const ClipboardPopup = GObject.registerClass(
             this.connect('key-press-event', this._onKeyPress.bind(this));
         }
 
+        _onButtonHover(button) {
+            if (button.hover && button._tooltipText) {
+                // Show tooltip
+                this._tooltip.set_text(button._tooltipText);
+                this._tooltip.visible = true;
+
+                // Position tooltip below the button
+                const [x, y] = button.get_transformed_position();
+                const [bw, bh] = button.get_size();
+                this._tooltip.set_position(Math.round(x), Math.round(y + bh + 4));
+            } else {
+                // Hide tooltip
+                this._tooltip.visible = false;
+            }
+        }
+
         _createModalOverlay() {
             // not used - using simpler click detection
         }
@@ -614,6 +765,7 @@ export const ClipboardPopup = GObject.registerClass(
 
         _setupClickOutside() {
             this._signalManager.disconnect('click-outside-handler');
+            this._signalManager.disconnect('focus-window-handler');
 
             debugLog('Setting up click outside handler');
             this._signalManager.connect(
@@ -670,6 +822,33 @@ export const ClipboardPopup = GObject.registerClass(
                 },
                 'click-outside-handler'
             );
+
+            // Also close popup when user focuses another window (clicking on Firefox, etc.)
+            this._signalManager.connect(
+                global.display,
+                'notify::focus-window',
+                () => {
+                    // Safety checks
+                    if (!this._isShowing || !this.visible || this._isPinned) {
+                        return;
+                    }
+
+                    const timeSinceShow = Date.now() - this._showTime;
+                    if (timeSinceShow < 500) {
+                        debugLog(`Ignoring focus change during grace period (${timeSinceShow}ms since show)`);
+                        return;
+                    }
+
+                    const focusedWindow = global.display.focus_window;
+                    if (focusedWindow) {
+                        debugLog(`Focus changed to window: ${focusedWindow.get_title()}, closing popup`);
+                        if (this._extension && this._extension.hidePopup) {
+                            this._extension.hidePopup();
+                        }
+                    }
+                },
+                'focus-window-handler'
+            );
         }
 
         _showConfirmDialog(message, onConfirm) {
@@ -715,9 +894,14 @@ export const ClipboardPopup = GObject.registerClass(
             this._currentListId = listId;
             this._currentType = type;
 
-            [this._allButton, this._favButton, this._textButton, this._imageButton, this._urlButton, this._listsButton].forEach(b => {
+            // Clear active state from all buttons including pinned lists
+            [this._allButton, this._favButton, this._textButton, this._imageButton, this._urlButton, this._codeButton, this._listsButton].forEach(b => {
                 if (b) b.remove_style_class_name('active');
             });
+            // Also clear pinned list buttons
+            for (const btn of this._pinnedListButtons) {
+                btn.remove_style_class_name('active');
+            }
 
             if (listId === -1) {
                 this._favButton.add_style_class_name('active');
@@ -727,8 +911,16 @@ export const ClipboardPopup = GObject.registerClass(
                 this._imageButton.add_style_class_name('active');
             } else if (type === ItemType.URL) {
                 this._urlButton.add_style_class_name('active');
+            } else if (type === ItemType.CODE) {
+                this._codeButton.add_style_class_name('active');
             } else if (listId !== null && listId > 0) {
-                this._listsButton.add_style_class_name('active');
+                // Check if it's a pinned list or regular list
+                const pinnedBtn = this._pinnedListButtons.find(b => b._listId === listId);
+                if (pinnedBtn) {
+                    pinnedBtn.add_style_class_name('active');
+                } else {
+                    this._listsButton.add_style_class_name('active');
+                }
             } else {
                 this._allButton.add_style_class_name('active');
             }
@@ -757,12 +949,17 @@ export const ClipboardPopup = GObject.registerClass(
 
             debugLog(`Popup shown at ${this._showTime}`);
 
+            // Remove old timeout before creating new one
+            if (this._outsideClickTimeoutId) {
+                this._timeoutManager.remove('click-outside-setup');
+            }
+
             this._outsideClickTimeoutId = this._timeoutManager.add(
                 GLib.PRIORITY_DEFAULT,
-                800,
+                100,
                 () => {
                     if (this._isShowing && this.visible) {
-                        debugLog('Setting up click outside handler after 800ms delay');
+                        debugLog('Setting up click outside handler after 100ms delay');
                         this._setupClickOutside();
                         this.grab_key_focus();
                     } else {
@@ -827,6 +1024,13 @@ export const ClipboardPopup = GObject.registerClass(
             this._isPinned = false;
             this._isShowing = false;
             this._dragging = false;
+
+            // Clean up tooltip
+            if (this._tooltip && this._tooltip.get_parent()) {
+                this._tooltip.get_parent().remove_child(this._tooltip);
+                this._tooltip.destroy();
+                this._tooltip = null;
+            }
 
             // Clean up item timeouts
             this._clearItemTimeouts();
@@ -1071,7 +1275,37 @@ export const ClipboardPopup = GObject.registerClass(
             let previewText = item.preview || item.plainText || item.content || '';
             if (item.type === ItemType.IMAGE) {
                 const size = item.metadata?.size ? ` (${Math.round(item.metadata.size / 1024)}KB)` : '';
-                previewText = `🖼️ Image${size}`;
+                const dimensions = (item.metadata?.width && item.metadata?.height)
+                    ? ` ${item.metadata.width}×${item.metadata.height}` : '';
+                previewText = `🖼️ Image${dimensions}${size}`;
+
+                // Try to show thumbnail - from dedicated thumbnail field OR from base64 content (legacy)
+                let thumbBase64 = item.thumbnail;
+
+                // Fallback: If no thumbnail but content is base64 (legacy format), use it directly
+                if (!thumbBase64 && item.metadata?.storedAs === 'base64' && item.content) {
+                    thumbBase64 = item.content;
+                }
+
+                if (thumbBase64) {
+                    try {
+                        const thumbData = GLib.base64_decode(thumbBase64);
+                        const bytes = new GLib.Bytes(thumbData);
+                        const gicon = Gio.BytesIcon.new(bytes);
+
+                        const thumbIcon = new St.Icon({
+                            gicon: gicon,
+                            icon_size: 48,
+                            style_class: 'clipmaster-thumbnail',
+                            x_align: Clutter.ActorAlign.START,
+                            y_align: Clutter.ActorAlign.CENTER
+                        });
+
+                        contentBox.add_child(thumbIcon);
+                    } catch (e) {
+                        debugLog(`Failed to render thumbnail: ${e.message}`);
+                    }
+                }
             }
 
             const previewLength = this._settings.get_int('preview-length');
@@ -1125,6 +1359,34 @@ export const ClipboardPopup = GObject.registerClass(
             }
 
             row.add_child(contentBox);
+
+            // QR button for TEXT and URL items
+            if ((item.type === ItemType.TEXT || item.type === ItemType.URL) &&
+                QrCodeGenerator.canEncode(item.content || item.plainText)) {
+                const qrButton = new St.Button({
+                    style_class: 'clipmaster-qr-button',
+                    can_focus: false,
+                    reactive: true,
+                    track_hover: true
+                });
+
+                const qrIcon = new St.Icon({
+                    icon_name: 'view-grid-symbolic',
+                    icon_size: 14,
+                    style_class: 'clipmaster-item-qr'
+                });
+                qrButton.set_child(qrIcon);
+
+                qrButton.connect('button-press-event', (actor, event) => {
+                    if (event.get_button() === 1) {
+                        this._showQrDialog(item);
+                        return Clutter.EVENT_STOP;
+                    }
+                    return Clutter.EVENT_PROPAGATE;
+                });
+
+                row.add_child(qrButton);
+            }
 
             const favButton = new St.Button({
                 style_class: 'clipmaster-fav-button',
@@ -1261,6 +1523,18 @@ export const ClipboardPopup = GObject.registerClass(
                 menu.addMenuItem(listSubmenu);
             }
 
+            // QR Code share option for text/URL items
+            if ((item.type === ItemType.TEXT || item.type === ItemType.URL) &&
+                QrCodeGenerator.canEncode(item.content || item.plainText)) {
+                menu.addAction(_('Share as QR Code'), () => {
+                    menu.close();
+                    this._timeoutManager.add(GLib.PRIORITY_DEFAULT, 100, () => {
+                        this._showQrDialog(item);
+                        return GLib.SOURCE_REMOVE;
+                    }, 'qr-dialog-delay');
+                });
+            }
+
             menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
 
             menu.addAction(_('Delete'), () => {
@@ -1335,6 +1609,94 @@ export const ClipboardPopup = GObject.registerClass(
 
             dialog.open();
             entry.grab_key_focus();
+        }
+
+        _showQrDialog(item) {
+            const text = item.content || item.plainText || '';
+
+            if (!QrCodeGenerator.canEncode(text)) {
+                Main.notify(_('ClipMaster'), _('Text too long for QR code (max 2000 chars)'));
+                return;
+            }
+
+            const dialog = new ModalDialog.ModalDialog({
+                styleClass: 'clipmaster-dialog clipmaster-qr-dialog'
+            });
+
+            const titleLabel = new St.Label({
+                text: _('QR Code'),
+                style_class: 'clipmaster-dialog-title',
+                x_align: Clutter.ActorAlign.CENTER
+            });
+            dialog.contentLayout.add_child(titleLabel);
+
+            try {
+                // Generate QR code
+                const { size, modules } = QrCodeGenerator.generate(text, QrEcc.MEDIUM);
+
+                // Create visual QR code using St.DrawingArea or grid of boxes
+                const qrSize = 200;
+                const cellSize = Math.floor(qrSize / (size + 4)); // +4 for border
+                const actualSize = cellSize * (size + 4);
+
+                const qrContainer = new St.Widget({
+                    style_class: 'clipmaster-qr-container',
+                    width: actualSize,
+                    height: actualSize,
+                    x_align: Clutter.ActorAlign.CENTER
+                });
+
+                // Draw QR code as colored boxes
+                for (let y = 0; y < size; y++) {
+                    for (let x = 0; x < size; x++) {
+                        if (modules[y][x]) {
+                            const cell = new St.Widget({
+                                style: `background-color: #000000;`,
+                                width: cellSize,
+                                height: cellSize,
+                                x: (x + 2) * cellSize,
+                                y: (y + 2) * cellSize
+                            });
+                            qrContainer.add_child(cell);
+                        }
+                    }
+                }
+
+                dialog.contentLayout.add_child(qrContainer);
+
+                // Show text preview
+                const previewText = text.length > 50 ? text.substring(0, 50) + '...' : text;
+                const previewLabel = new St.Label({
+                    text: previewText,
+                    style_class: 'clipmaster-qr-preview',
+                    x_align: Clutter.ActorAlign.CENTER
+                });
+                dialog.contentLayout.add_child(previewLabel);
+
+                // Show character count
+                const countLabel = new St.Label({
+                    text: `${text.length} ${_('characters')}`,
+                    style_class: 'clipmaster-qr-count',
+                    x_align: Clutter.ActorAlign.CENTER
+                });
+                dialog.contentLayout.add_child(countLabel);
+
+            } catch (e) {
+                const errorLabel = new St.Label({
+                    text: _('Failed to generate QR code: ') + e.message,
+                    style_class: 'clipmaster-dialog-message'
+                });
+                dialog.contentLayout.add_child(errorLabel);
+                debugLog(`QR generation error: ${e.message}`);
+            }
+
+            dialog.setButtons([{
+                label: _('Close'),
+                action: () => dialog.close(),
+                default: true
+            }]);
+
+            dialog.open();
         }
 
         _onKeyPress(actor, event) {

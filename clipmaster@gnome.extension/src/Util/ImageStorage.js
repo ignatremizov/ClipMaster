@@ -168,7 +168,11 @@ export class ImageStorage {
                 return null;
             }
 
-            const [contents] = await file.load_contents_async(null);
+            const [loadOk, contents] = file.load_contents(null);
+            if (!loadOk || !contents) {
+                debugLog(`ImageStorage: Failed to load image bytes: ${imagePath}`);
+                return null;
+            }
             return contents;
         } catch (e) {
             console.error(`ImageStorage: Error loading image: ${e.message}`);

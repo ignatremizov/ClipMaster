@@ -51,6 +51,7 @@ export class ClipboardMonitor {
             (settings, key) => this._updateCachedSetting(key),
             'settings-changed'
         );
+
     }
 
     _updateCachedSetting(key) {
@@ -280,23 +281,187 @@ export class ClipboardMonitor {
         debugLog(`Available MIME types: ${mimetypes ? mimetypes.join(', ') : 'none'}`);
 
         if (mimetypes && mimetypes.length > 0) {
-            const hasImage = mimetypes.some(mime =>
-                mime.startsWith('image/')
-            );
+            const imageMimeType = this._pickPreferredImageMimeType(mimetypes);
+            debugLog(`Preferred Meta.Selection image MIME type: ${imageMimeType || 'none'}`);
 
-            if (hasImage) {
-                debugLog(`✓ Image MIME type detected via Meta.Selection`);
+            if (imageMimeType) {
+                debugLog(`✓ Image MIME type detected via Meta.Selection: ${imageMimeType}`);
                 const isWayland = GLib.getenv('XDG_SESSION_TYPE') === 'wayland';
-                this._fetchImageFromClipboard(isWayland, selectionType, callback);
+                this._fetchImageFromClipboard(isWayland, selectionType, imageMimeType, callback);
                 return;
             }
         }
 
         debugLog(`✗ No image MIME type found`);
-        if (callback) callback(false);
+        this._checkForImageViaStClipboard(selectionType, callback);
     }
 
-    _fetchImageFromClipboard(isWayland, selectionType = 'CLIPBOARD', callback = null) {
+    _clipboardTypeFromSelectionType(selectionType) {
+        return selectionType === 'PRIMARY'
+            ? St.ClipboardType.PRIMARY
+            : St.ClipboardType.CLIPBOARD;
+    }
+
+    _pickPreferredImageMimeType(mimetypes) {
+        if (!mimetypes || mimetypes.length === 0) return null;
+
+        const preferredOrder = [
+            'image/png',
+            'image/jpeg',
+            'image/webp',
+            'image/gif',
+            'image/bmp',
+            'image/tiff',
+            'image/svg+xml',
+        ];
+
+        for (const mime of preferredOrder) {
+            if (mimetypes.includes(mime)) {
+                return mime;
+            }
+        }
+
+        return mimetypes.find(mime => mime.startsWith('image/')) || null;
+    }
+
+    _imageFormatFromMimeType(mimeType) {
+        switch (mimeType) {
+            case 'image/jpeg':
+                return 'jpeg';
+            case 'image/webp':
+                return 'webp';
+            case 'image/gif':
+                return 'gif';
+            case 'image/bmp':
+                return 'bmp';
+            case 'image/tiff':
+                return 'tiff';
+            case 'image/svg+xml':
+                return 'svg';
+            case 'image/png':
+            default:
+                return 'png';
+        }
+    }
+
+    _storeImageBytes(contents, imageFormat, timestamp, callback = null) {
+        const finish = (stored) => {
+            if (callback) callback(stored);
+        };
+
+        try {
+            const size = contents?.length ?? 0;
+            const maxSize = this._cachedSettings.maxImageSize;
+
+            if (size <= 0 || size > maxSize) {
+                debugLog(`Fetched image size invalid for capture (size=${size}, maxSize=${maxSize})`);
+                finish(false);
+                return;
+            }
+
+            const hash = HashUtils.hashImageData(contents);
+            debugLog(`Loaded image bytes=${size}, hash=${hash}, format=${imageFormat}`);
+
+            if (hash === this._lastImageHash) {
+                debugLog(`Image duplicate detected`);
+                finish(true);
+                return;
+            }
+
+            this._lastImageHash = hash;
+
+            if (!(this._cachedSettings && this._cachedSettings.trackImages)) {
+                debugLog(`Image found but trackImages=false`);
+                finish(true);
+                return;
+            }
+
+            this._imageStorage.saveImage(contents, imageFormat, hash)
+                .then(storageResult => {
+                    if (!storageResult) {
+                        debugLog(`ImageStorage.saveImage failed, image not saved`);
+                        finish(false);
+                        return;
+                    }
+
+                    const item = {
+                        type: ItemType.IMAGE,
+                        content: storageResult.imagePath,
+                        thumbnail: storageResult.thumbnail,
+                        plainText: `[Image ${timestamp}]`,
+                        preview: `Image (${Math.round(storageResult.originalSize / 1024)}KB)`,
+                        imageFormat: storageResult.format,
+                        metadata: {
+                            size: storageResult.originalSize,
+                            savedSize: storageResult.savedSize,
+                            thumbnailSize: storageResult.thumbnailSize,
+                            width: storageResult.width,
+                            height: storageResult.height,
+                            hash: hash,
+                            storedAs: 'file'
+                        }
+                    };
+
+                    if (!this._isStopped && this._database) {
+                        const itemId = this._database.addItem(item);
+                        this._database.enforceLimit(this._cachedSettings.historySize);
+
+                        if (this._onNewItem && !this._isStopped) {
+                            this._onNewItem(itemId);
+                        }
+                    }
+
+                    debugLog(`Image successfully saved to file: ${storageResult.imagePath}`);
+                    finish(true);
+                })
+                .catch(e => {
+                    debugLog(`Image storage error: ${e.message}`);
+                    finish(false);
+                });
+        } catch (e) {
+            debugLog(`_storeImageBytes error: ${e.message}`);
+            finish(false);
+        }
+    }
+
+    _checkForImageViaStClipboard(selectionType = 'CLIPBOARD', callback = null) {
+        const clipboardType = this._clipboardTypeFromSelectionType(selectionType);
+        const mimetypes = this._clipboard.get_mimetypes(clipboardType) || [];
+        debugLog(`St.Clipboard MIME types (${selectionType}): ${mimetypes.length > 0 ? mimetypes.join(', ') : 'none'}`);
+
+        const imageMimeType = this._pickPreferredImageMimeType(mimetypes);
+        if (!imageMimeType) {
+            if (callback) callback(false);
+            return;
+        }
+
+        const imageFormat = this._imageFormatFromMimeType(imageMimeType);
+        const timestamp = Date.now();
+        debugLog(`Fetching image via St.Clipboard using MIME ${imageMimeType}, format ${imageFormat}, selectionType=${selectionType}`);
+
+        this._clipboard.get_content(clipboardType, imageMimeType, (clipboard, bytes) => {
+            if (this._isStopped) {
+                if (callback) callback(false);
+                return;
+            }
+
+            if (!bytes) {
+                debugLog(`St.Clipboard returned no bytes for MIME ${imageMimeType}`);
+                if (callback) callback(false);
+                return;
+            }
+
+            try {
+                const contents = bytes.get_data();
+                this._storeImageBytes(contents, imageFormat, timestamp, callback);
+            } catch (e) {
+                debugLog(`St.Clipboard image fetch error: ${e.message}`);
+                if (callback) callback(false);
+            }
+        });
+    }
+
+    _fetchImageFromClipboard(isWayland, selectionType = 'CLIPBOARD', imageMimeType = 'image/png', callback = null) {
         if (this._isStopped) {
             if (callback) callback(false);
             return;
@@ -304,6 +469,9 @@ export class ClipboardMonitor {
 
         const maxSize = this._cachedSettings.maxImageSize;
         const timestamp = Date.now();
+        const imageFormat = this._imageFormatFromMimeType(imageMimeType);
+        const tempExt = imageFormat === 'jpeg' ? 'jpg' : imageFormat;
+        debugLog(`Fetching image from Meta.Selection using MIME ${imageMimeType}, format ${imageFormat}, selectionType=${selectionType}`);
 
         try {
             const metaSelectionType = selectionType === 'PRIMARY'
@@ -311,14 +479,14 @@ export class ClipboardMonitor {
                 : Meta.SelectionType.SELECTION_CLIPBOARD;
 
             const tempDir = GLib.get_tmp_dir();
-            const tempPath = GLib.build_filenamev([tempDir, `clipmaster_${timestamp}.png`]);
+            const tempPath = GLib.build_filenamev([tempDir, `clipmaster_${timestamp}.${tempExt}`]);
             const tempFile = Gio.File.new_for_path(tempPath);
 
             const outputStream = tempFile.replace(null, false, Gio.FileCreateFlags.REPLACE_DESTINATION, null);
 
             this._selection.transfer_async(
                 metaSelectionType,
-                'image/png',
+                imageMimeType,
                 maxSize,
                 outputStream,
                 null,
@@ -334,66 +502,28 @@ export class ClipboardMonitor {
 
                     try {
                         const success = this._selection.transfer_finish(result);
+                        debugLog(`Meta.Selection transfer finished: success=${success}, tempPath=${tempPath}`);
 
                         if (success && tempFile.query_exists(null)) {
                             // query_info_async?
                             const info = await tempFile.query_info_async('standard::size', Gio.FileQueryInfoFlags.NONE, GLib.PRIORITY_DEFAULT, null);
                             const size = info.get_size();
+                            debugLog(`Meta.Selection temp file size=${size} bytes`);
 
                             if (size > 0 && size <= maxSize) {
-                                // Use async load
-                                const [contents] = await tempFile.load_contents_async(null);
-                                const hash = HashUtils.hashImageData(contents);
-
-                                if (hash !== this._lastImageHash) {
-                                    this._lastImageHash = hash;
-
-                                    if (this._cachedSettings && this._cachedSettings.trackImages) {
-                                        // Use ImageStorage for file-based storage with thumbnails
-                                        const storageResult = await this._imageStorage.saveImage(contents, 'png', hash);
-
-                                        if (storageResult) {
-                                            const item = {
-                                                type: ItemType.IMAGE,
-                                                content: storageResult.imagePath,  // File path instead of base64
-                                                thumbnail: storageResult.thumbnail,  // Base64 thumbnail for popup
-                                                plainText: `[Image ${timestamp}]`,
-                                                preview: `Image (${Math.round(storageResult.originalSize / 1024)}KB)`,
-                                                imageFormat: storageResult.format,
-                                                metadata: {
-                                                    size: storageResult.originalSize,
-                                                    savedSize: storageResult.savedSize,
-                                                    thumbnailSize: storageResult.thumbnailSize,
-                                                    width: storageResult.width,
-                                                    height: storageResult.height,
-                                                    hash: hash,
-                                                    storedAs: 'file'  // Indicates file-based storage
-                                                }
-                                            };
-
-                                            if (!this._isStopped && this._database) {
-                                                const itemId = this._database.addItem(item);
-                                                this._database.enforceLimit(this._cachedSettings.historySize);
-
-                                                if (this._onNewItem && !this._isStopped) {
-                                                    this._onNewItem(itemId);
-                                                }
-                                            }
-
-                                            imageSuccessfullyAdded = true;
-                                            debugLog(`Image successfully saved to file: ${storageResult.imagePath}`);
-                                        } else {
-                                            debugLog(`ImageStorage.saveImage failed, image not saved`);
-                                        }
-                                    } else {
-                                        debugLog(`Image found but trackImages=false`);
-                                        imageSuccessfullyAdded = true;
-                                    }
+                                const [loadOk, contents] = tempFile.load_contents(null);
+                                if (!loadOk || !contents) {
+                                    debugLog(`Failed to load transferred image bytes from ${tempPath}`);
                                 } else {
-                                    debugLog(`Image duplicate detected`);
-                                    imageSuccessfullyAdded = true;
+                                    imageSuccessfullyAdded = await new Promise(resolve => {
+                                        this._storeImageBytes(contents, imageFormat, timestamp, resolve);
+                                    });
                                 }
+                            } else {
+                                debugLog(`Meta.Selection transferred image size invalid (size=${size}, maxSize=${maxSize})`);
                             }
+                        } else {
+                            debugLog(`Meta.Selection transfer did not produce a readable temp file`);
                         }
                     } catch (e) {
                         debugLog(`Native image fetch error: ${e.message}`);

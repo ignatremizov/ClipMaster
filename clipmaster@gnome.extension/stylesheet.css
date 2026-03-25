@@ -128,8 +128,24 @@
     color: #cdd6f4;
 }
 
+.clipmaster-search-hint {
+    color: rgba(205, 214, 244, 0.55);
+}
+
+.clipmaster-search StEntry StLabel.hint-text {
+    color: rgba(205, 214, 244, 0.5);
+}
+
 .clipmaster-popup.light .clipmaster-search StEntry {
     color: #4c4f69;
+}
+
+.clipmaster-popup.light .clipmaster-search-hint {
+    color: rgba(76, 79, 105, 0.55);
+}
+
+.clipmaster-popup.light .clipmaster-search StEntry StLabel.hint-text {
+    color: rgba(76, 79, 105, 0.55);
 }
 
 .clipmaster-search:hover {
@@ -1270,7 +1286,7 @@
     color: #303030;
 }
 
-.clipmaster-popup.theme-adwaita.light .clipmaster-search StEntry:hint-text {
+.clipmaster-popup.theme-adwaita.light .clipmaster-search StEntry StLabel.hint-text {
     color: rgba(0, 0, 0, 0.5);
 }
 

@@ -131,24 +131,8 @@ export const ClipboardPopup = GObject.registerClass(
             const followSystem = this._settings.get_boolean('follow-system-theme');
             const customThemePath = this._settings.get_string('custom-theme-path') || '';
 
-            // Handle custom theme file
-            if (customThemePath && !followSystem) {
-                const customFile = Gio.File.new_for_path(customThemePath);
-                if (customFile.query_exists(null)) {
-                    try {
-                        if (this._customStylesheet) {
-                            const theme = St.ThemeContext.get_for_stage(global.stage).get_theme();
-                            theme.unload_stylesheet(this._customStylesheet);
-                        }
-                        const theme = St.ThemeContext.get_for_stage(global.stage).get_theme();
-                        theme.load_stylesheet(customFile);
-                        this._customStylesheet = customFile;
-                        return; // Custom theme takes precedence
-                    } catch (e) {
-                        console.error(`ClipMaster: Error loading custom theme: ${e.message}`);
-                    }
-                }
-            } else if (this._customStylesheet) {
+            // Unload a previously active custom stylesheet before re-applying theme state.
+            if (this._customStylesheet) {
                 try {
                     const theme = St.ThemeContext.get_for_stage(global.stage).get_theme();
                     theme.unload_stylesheet(this._customStylesheet);
@@ -171,6 +155,20 @@ export const ClipboardPopup = GObject.registerClass(
 
             if (!isDark) {
                 this.add_style_class_name('light');
+            }
+
+            // Load custom theme as an override on top of the active built-in theme.
+            if (customThemePath && !followSystem) {
+                const customFile = Gio.File.new_for_path(customThemePath);
+                if (customFile.query_exists(null)) {
+                    try {
+                        const theme = St.ThemeContext.get_for_stage(global.stage).get_theme();
+                        theme.load_stylesheet(customFile);
+                        this._customStylesheet = customFile;
+                    } catch (e) {
+                        console.error(`ClipMaster: Error loading custom theme: ${e.message}`);
+                    }
+                }
             }
         }
 

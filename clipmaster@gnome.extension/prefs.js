@@ -174,6 +174,13 @@ export default class ClipMasterPreferences extends ExtensionPreferences {
         settings.bind('close-on-paste', closeOnPasteRow, 'active', Gio.SettingsBindFlags.DEFAULT);
         popupGroup.add(closeOnPasteRow);
 
+        const timestampRow = new Adw.SwitchRow({
+            title: _('Show Timestamps'),
+            subtitle: _('Show the timestamp line under each clipboard item')
+        });
+        settings.bind('show-timestamps', timestampRow, 'active', Gio.SettingsBindFlags.DEFAULT);
+        popupGroup.add(timestampRow);
+
         // Notifications
         const notificationRow = new Adw.SwitchRow({
             title: _('Show Notifications'),

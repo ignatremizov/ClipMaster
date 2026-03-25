@@ -329,9 +329,12 @@ export const ClipboardPopup = GObject.registerClass(
 
             this._searchEntry = new St.Entry({
                 style_class: 'clipmaster-search',
-                hint_text: _('Search... (type to filter)'),
                 can_focus: true,
                 x_expand: true
+            });
+            this._searchEntry.hint_actor = new St.Label({
+                text: _('Search... (type to filter)'),
+                style_class: 'clipmaster-search-hint'
             });
             this._searchEntry.clutter_text.connect('text-changed', () => {
                 this._searchQuery = this._searchEntry.get_text();
@@ -368,7 +371,7 @@ export const ClipboardPopup = GObject.registerClass(
 
             this._textButton = new St.Button({
                 style_class: 'clipmaster-filter-button',
-                label: _('Text'),
+                label: _('Txt'),
                 can_focus: false
             });
             this._textButton.connect('clicked', () => { this._setFilter(null, ItemType.TEXT); return Clutter.EVENT_STOP; });
@@ -376,7 +379,7 @@ export const ClipboardPopup = GObject.registerClass(
 
             this._imageButton = new St.Button({
                 style_class: 'clipmaster-filter-button',
-                label: _('Images'),
+                label: _('Img'),
                 can_focus: false
             });
             this._imageButton.connect('clicked', () => { this._setFilter(null, ItemType.IMAGE); return Clutter.EVENT_STOP; });
@@ -384,7 +387,7 @@ export const ClipboardPopup = GObject.registerClass(
 
             this._urlButton = new St.Button({
                 style_class: 'clipmaster-filter-button',
-                label: _('URLs'),
+                label: _('URL'),
                 can_focus: false
             });
             this._urlButton.connect('clicked', () => { this._setFilter(null, ItemType.URL); return Clutter.EVENT_STOP; });
@@ -408,7 +411,7 @@ export const ClipboardPopup = GObject.registerClass(
 
             this._listsButton = new St.Button({
                 style_class: 'clipmaster-filter-button',
-                label: _('Lists ▾'),
+                label: _('Lists'),
                 can_focus: false
             });
             this._listsButton.connect('clicked', () => { this._showListsMenu(); return Clutter.EVENT_STOP; });
@@ -1132,6 +1135,32 @@ export const ClipboardPopup = GObject.registerClass(
             this._updateSelection();
         }
 
+        _formatItemTimestamp(created) {
+            const date = new Date(created);
+            const now = new Date();
+            const diffMs = now - date;
+            const diffMins = Math.floor(diffMs / 60000);
+            const diffHours = Math.floor(diffMs / 3600000);
+            const diffDays = Math.floor(diffMs / 86400000);
+
+            if (diffMins < 1) {
+                return _('Just now');
+            } else if (diffMins < 60) {
+                return `${diffMins} ${diffMins === 1 ? _('min') : _('mins')} ago`;
+            } else if (diffHours < 24) {
+                return `${diffHours} ${diffHours === 1 ? _('hour') : _('hours')} ago`;
+            } else if (diffDays < 7) {
+                return `${diffDays} ${diffDays === 1 ? _('day') : _('days')} ago`;
+            }
+
+            const day = String(date.getDate()).padStart(2, '0');
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const year = date.getFullYear();
+            const hours = String(date.getHours()).padStart(2, '0');
+            const mins = String(date.getMinutes()).padStart(2, '0');
+            return `${day}.${month}.${year} ${hours}:${mins}`;
+        }
+
         _createItemRow(item, index) {
             const row = new St.BoxLayout({
                 style_class: 'clipmaster-item',
@@ -1321,34 +1350,10 @@ export const ClipboardPopup = GObject.registerClass(
             previewLabel.clutter_text.ellipsize = Pango.EllipsizeMode.END;
             contentBox.add_child(previewLabel);
 
-            if (item.created) {
-                const date = new Date(item.created);
-                const now = new Date();
-                const diffMs = now - date;
-                const diffMins = Math.floor(diffMs / 60000);
-                const diffHours = Math.floor(diffMs / 3600000);
-                const diffDays = Math.floor(diffMs / 86400000);
-
-                let timeText = '';
-                if (diffMins < 1) {
-                    timeText = _('Just now');
-                } else if (diffMins < 60) {
-                    timeText = `${diffMins} ${diffMins === 1 ? _('min') : _('mins')} ago`;
-                } else if (diffHours < 24) {
-                    timeText = `${diffHours} ${diffHours === 1 ? _('hour') : _('hours')} ago`;
-                } else if (diffDays < 7) {
-                    timeText = `${diffDays} ${diffDays === 1 ? _('day') : _('days')} ago`;
-                } else {
-                    const day = String(date.getDate()).padStart(2, '0');
-                    const month = String(date.getMonth() + 1).padStart(2, '0');
-                    const year = date.getFullYear();
-                    const hours = String(date.getHours()).padStart(2, '0');
-                    const mins = String(date.getMinutes()).padStart(2, '0');
-                    timeText = `${day}.${month}.${year} ${hours}:${mins}`;
-                }
-
+            const showTimestamps = this._settings?.get_boolean('show-timestamps') ?? true;
+            if (showTimestamps && item.created) {
                 const timeLabel = new St.Label({
-                    text: timeText,
+                    text: this._formatItemTimestamp(item.created),
                     style_class: 'clipmaster-item-time',
                     x_expand: true,
                     x_align: Clutter.ActorAlign.START

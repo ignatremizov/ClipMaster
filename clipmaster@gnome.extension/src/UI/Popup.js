@@ -1464,7 +1464,7 @@ export const ClipboardPopup = GObject.registerClass(
             } else {
                 const content = this._plainTextMode ? item.plainText : item.content;
                 debugLog(`Copying text to clipboard (plainText=${this._plainTextMode}): ${content ? content.substring(0, 50) : 'null'}...`);
-                this._monitor.copyToClipboard(content, this._plainTextMode);
+                this._monitor.copyToClipboard(content, this._plainTextMode, true);
             }
 
             this._database.updateItem(item.id, {
@@ -1480,8 +1480,11 @@ export const ClipboardPopup = GObject.registerClass(
             const isFromHover = this._pasteFromHover || false;
             debugLog(`close-on-paste=${closeOnPaste}, _isPinned=${this._isPinned}, isFromHover=${isFromHover}`);
 
-            if (closeOnPaste && !this._isPinned && !isFromHover) {
-                debugLog(`Closing popup after paste (close-on-paste=true, not pinned, explicit click)`);
+            if (!isFromHover) {
+                debugLog('Triggering restore-and-paste flow after explicit selection');
+                this._extension.pasteClipboardContents();
+            } else if (closeOnPaste && !this._isPinned) {
+                debugLog('Closing popup after hover paste');
                 this._extension.hidePopup();
             } else {
                 debugLog(`NOT closing popup (close-on-paste=${closeOnPaste}, pinned=${this._isPinned}, isFromHover=${isFromHover})`);

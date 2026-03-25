@@ -680,12 +680,15 @@ export class ClipboardMonitor {
         }
     }
 
-    copyToClipboard(text, asPlainText = false) {
+    copyToClipboard(text, asPlainText = false, mirrorPrimary = false) {
         if (asPlainText) {
             text = text.replace(/<[^>]*>/g, '');
         }
         this._lastContent = text;
         this._clipboard.set_text(St.ClipboardType.CLIPBOARD, text);
+        if (mirrorPrimary) {
+            this._clipboard.set_text(St.ClipboardType.PRIMARY, text);
+        }
     }
 
     async copyImageToClipboard(imageContent) {

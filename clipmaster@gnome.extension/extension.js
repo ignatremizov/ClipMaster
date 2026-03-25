@@ -10,6 +10,7 @@ import Gio from 'gi://Gio';
 import St from 'gi://St';
 import Meta from 'gi://Meta';
 import Shell from 'gi://Shell';
+import Clutter from 'gi://Clutter';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import { Extension, gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js';
@@ -184,6 +185,7 @@ export default class ClipMasterExtension extends Extension {
         }
 
         debugLog('showPopup: Starting to show popup');
+        this._previousFocusWindow = global.display?.focus_window ?? null;
 
         // Add to chrome only when showing (prevents input blocking when hidden)
         if (!this._popupAddedToChrome) {
@@ -260,6 +262,71 @@ export default class ClipMasterExtension extends Extension {
         debugLog('showPopup: Popup.show() completed');
     }
 
+    _getActivationTimestamp() {
+        try {
+            if (global.display?.get_current_time_roundtrip) {
+                return global.display.get_current_time_roundtrip();
+            }
+        } catch (e) {
+            debugLog(`_getActivationTimestamp roundtrip failed: ${e.message}`);
+        }
+
+        try {
+            if (global.get_current_time) {
+                return global.get_current_time();
+            }
+        } catch (e) {
+            debugLog(`_getActivationTimestamp global failed: ${e.message}`);
+        }
+
+        return Clutter.CURRENT_TIME;
+    }
+
+    _restorePreviousFocusWindow() {
+        const window = this._previousFocusWindow;
+        this._previousFocusWindow = null;
+
+        if (!window) {
+            return;
+        }
+
+        try {
+            window.activate(this._getActivationTimestamp());
+        } catch (e) {
+            debugLog(`_restorePreviousFocusWindow failed: ${e.message}`);
+        }
+    }
+
+    _emitPasteShortcut() {
+        try {
+            const seat = Clutter.get_default_backend()?.get_default_seat();
+            if (!seat?.create_virtual_device) {
+                debugLog('_emitPasteShortcut: no virtual keyboard seat available');
+                return;
+            }
+
+            const keyboard = seat.create_virtual_device(Clutter.InputDeviceType.KEYBOARD_DEVICE);
+            const timestamp = Clutter.get_current_event_time() || this._getActivationTimestamp();
+
+            keyboard.notify_keyval(timestamp, Clutter.KEY_Control_L, Clutter.KeyState.PRESSED);
+            keyboard.notify_keyval(timestamp, Clutter.KEY_v, Clutter.KeyState.PRESSED);
+            keyboard.notify_keyval(timestamp, Clutter.KEY_v, Clutter.KeyState.RELEASED);
+            keyboard.notify_keyval(timestamp, Clutter.KEY_Control_L, Clutter.KeyState.RELEASED);
+        } catch (e) {
+            console.error(`ClipMaster: Failed to emit paste shortcut: ${e.message}`);
+        }
+    }
+
+    pasteClipboardContents() {
+        this.hidePopup();
+        this._restorePreviousFocusWindow();
+
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 80, () => {
+            this._emitPasteShortcut();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
     hidePopup() {
         debugLog('hidePopup: Called');
         if (this._popup) {
@@ -307,7 +374,8 @@ export default class ClipMasterExtension extends Extension {
     _pasteAsPlain() {
         const items = this._database.getItems({ limit: 1 });
         if (items.length > 0) {
-            this._monitor.copyToClipboard(items[0].plainText, true);
+            this._monitor.copyToClipboard(items[0].plainText, true, true);
+            this.pasteClipboardContents();
         }
     }
 }

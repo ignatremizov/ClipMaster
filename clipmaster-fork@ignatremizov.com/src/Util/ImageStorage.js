@@ -3,7 +3,7 @@
  * License: GPL-2.0-or-later
  * 
  * Handles image file storage with thumbnail generation for optimized database size.
- * Images are stored as WebP files, thumbnails are kept small for popup display.
+ * Full images keep their original bytes and format; thumbnails are optimized for display.
  */
 
 import GLib from 'gi://GLib';
@@ -38,6 +38,36 @@ export class ImageStorage {
         }
     }
 
+    _normalizeFormat(format) {
+        switch ((format || 'png').toLowerCase()) {
+            case 'jpg':
+                return 'jpeg';
+            case 'svg+xml':
+                return 'svg';
+            default:
+                return (format || 'png').toLowerCase();
+        }
+    }
+
+    _extensionForFormat(format) {
+        switch (this._normalizeFormat(format)) {
+            case 'jpeg':
+                return 'jpg';
+            case 'svg':
+                return 'svg';
+            case 'gif':
+                return 'gif';
+            case 'bmp':
+                return 'bmp';
+            case 'tiff':
+                return 'tiff';
+            case 'webp':
+                return 'webp';
+            default:
+                return 'png';
+        }
+    }
+
     /**
      * Save an image from raw bytes and generate a thumbnail
      * @param {Uint8Array} imageData - Raw image data
@@ -50,11 +80,11 @@ export class ImageStorage {
         const imageId = hash || `img_${timestamp}`;
 
         try {
-            // Step 1: Save original image as WebP for compression
-            const imagePath = GLib.build_filenamev([this._imagesDir, `${imageId}.webp`]);
-            const thumbPath = GLib.build_filenamev([this._thumbnailsDir, `${imageId}.webp`]);
+            const normalizedFormat = this._normalizeFormat(format);
+            const imageExt = this._extensionForFormat(normalizedFormat);
+            const imagePath = GLib.build_filenamev([this._imagesDir, `${imageId}.${imageExt}`]);
 
-            // Load image data into pixbuf
+            // Load image data into pixbuf for validation and thumbnail generation.
             const inputStream = Gio.MemoryInputStream.new_from_bytes(new GLib.Bytes(imageData));
             const pixbuf = GdkPixbuf.Pixbuf.new_from_stream(inputStream, null);
             inputStream.close(null);
@@ -67,20 +97,27 @@ export class ImageStorage {
             const originalWidth = pixbuf.get_width();
             const originalHeight = pixbuf.get_height();
 
-            // Step 2: Save full image as WebP (better compression than PNG)
-            // Note: WebP support requires gdk-pixbuf-webp loader (usually installed)
-            let savedAsWebp = false;
-            try {
-                pixbuf.savev(imagePath, 'webp', ['quality'], ['85']);
-                savedAsWebp = true;
-                debugLog(`ImageStorage: Saved WebP image to ${imagePath}`);
-            } catch (e) {
-                // Fallback to PNG if WebP not supported
-                debugLog(`ImageStorage: WebP not supported, falling back to PNG: ${e.message}`);
-                const pngPath = GLib.build_filenamev([this._imagesDir, `${imageId}.png`]);
-                pixbuf.savev(pngPath, 'png', [], []);
-                debugLog(`ImageStorage: Saved PNG image to ${pngPath}`);
-            }
+            // Keep the original bytes for the full image so history replay preserves
+            // the source format instead of transcoding it.
+            const imageFile = Gio.File.new_for_path(imagePath);
+            await new Promise((resolve, reject) => {
+                imageFile.replace_contents_bytes_async(
+                    new GLib.Bytes(imageData),
+                    null,
+                    false,
+                    Gio.FileCreateFlags.REPLACE_DESTINATION,
+                    null,
+                    (file, result) => {
+                        try {
+                            file.replace_contents_finish(result);
+                            resolve();
+                        } catch (e) {
+                            reject(e);
+                        }
+                    }
+                );
+            });
+            debugLog(`ImageStorage: Saved ${normalizedFormat} image to ${imagePath}`);
 
             // Step 3: Create thumbnail
             const thumbPixbuf = this._createThumbnail(pixbuf, this._thumbSize);
@@ -106,7 +143,6 @@ export class ImageStorage {
             }
 
             // Get file sizes
-            const imageFile = Gio.File.new_for_path(savedAsWebp ? imagePath : imagePath.replace('.webp', '.png'));
             const imageInfo = imageFile.query_info('standard::size', Gio.FileQueryInfoFlags.NONE, null);
             const savedImageSize = imageInfo.get_size();
 
@@ -115,14 +151,14 @@ export class ImageStorage {
             debugLog(`ImageStorage: Original ${originalWidth}x${originalHeight}, saved ${savedImageSize} bytes, thumb ~${thumbnailSize} bytes`);
 
             return {
-                imagePath: savedAsWebp ? imagePath : imagePath.replace('.webp', '.png'),
+                imagePath: imagePath,
                 thumbnail: thumbnailBase64,
                 originalSize: imageData.length,
                 savedSize: savedImageSize,
                 thumbnailSize: thumbnailSize,
                 width: originalWidth,
                 height: originalHeight,
-                format: savedAsWebp ? 'webp' : 'png'
+                format: normalizedFormat
             };
 
         } catch (e) {

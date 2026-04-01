@@ -750,8 +750,8 @@ export class ClipboardMonitor {
 
             if (size > maxSize || size === 0) return;
 
-            // Async load
-            const [contents] = await file.load_contents_async(null);
+            const [loadOk, contents] = file.load_contents(null);
+            if (!loadOk || !contents) return;
 
             const hash = HashUtils.hashImageData(contents);
 
@@ -821,22 +821,36 @@ export class ClipboardMonitor {
         }
     }
 
+    _mimeTypeFromImagePath(imagePath) {
+        const lower = imagePath.toLowerCase();
+        if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+        if (lower.endsWith('.gif')) return 'image/gif';
+        if (lower.endsWith('.bmp')) return 'image/bmp';
+        if (lower.endsWith('.tiff') || lower.endsWith('.tif')) return 'image/tiff';
+        if (lower.endsWith('.webp')) return 'image/webp';
+        if (lower.endsWith('.svg')) return 'image/svg+xml';
+        return 'image/png';
+    }
+
     async copyImageToClipboard(imageContent) {
         try {
             let imageData = null;
+            let mimeType = 'image/png';
 
             if (imageContent.includes('/') && !imageContent.startsWith('data:')) {
-                // Handle file path - load image from disk
+                // Preserve the stored file bytes and publish the matching MIME type
+                // so replaying clipboard history keeps the original format.
                 try {
                     imageData = await this._imageStorage.loadImage(imageContent);
                     if (!imageData) {
                         console.warn(`ClipMaster: Could not load image from: ${imageContent}`);
-                        return;
+                        return false;
                     }
-                    debugLog(`Loaded image from file: ${imageContent}`);
+                    mimeType = this._mimeTypeFromImagePath(imageContent);
+                    debugLog(`Loaded image from file for clipboard: ${imageContent} (${mimeType})`);
                 } catch (e) {
                     console.error(`ClipMaster: Error loading image file: ${e.message}`);
-                    return;
+                    return false;
                 }
             } else {
                 // Base64 (legacy support)
@@ -844,17 +858,21 @@ export class ClipboardMonitor {
                     imageData = GLib.base64_decode(imageContent);
                 } catch (e) {
                     console.error(`ClipMaster: Error decoding base64 image: ${e.message}`);
-                    return;
+                    return false;
                 }
             }
 
             if (imageData) {
+                this._lastImageHash = HashUtils.hashImageData(imageData);
                 const bytes = GLib.Bytes.new(imageData);
-                this._clipboard.set_content(St.ClipboardType.CLIPBOARD, 'image/png', bytes);
+                this._clipboard.set_content(St.ClipboardType.CLIPBOARD, mimeType, bytes);
                 debugLog(`Image copied to clipboard successfully`);
+                return true;
             }
+            return false;
         } catch (e) {
             console.error(`ClipMaster: Error copying image to clipboard: ${e.message}`);
+            return false;
         }
     }
 }

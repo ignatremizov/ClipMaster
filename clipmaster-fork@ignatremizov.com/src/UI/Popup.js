@@ -54,7 +54,7 @@ export const ClipboardPopup = GObject.registerClass(
             this._isPinned = false;
             this._isShowing = false;
             this._showTime = 0;
-            this._pasteFromHover = false;
+            this._allowNextPaste = false;
             this._customStylesheet = null;
 
             this._dragging = false;
@@ -342,6 +342,7 @@ export const ClipboardPopup = GObject.registerClass(
             });
             this._searchEntry.clutter_text.connect('activate', () => {
                 debugLog('Search entry activated (Enter pressed)');
+                this._allowNextPaste = true;
                 this._pasteSelected();
                 return Clutter.EVENT_STOP;
             });
@@ -824,19 +825,12 @@ export const ClipboardPopup = GObject.registerClass(
                 'click-outside-handler'
             );
 
-            // Also close popup when user focuses another window (clicking on Firefox, etc.)
+            // Close the popup when focus moves to another window.
             this._signalManager.connect(
                 global.display,
                 'notify::focus-window',
                 () => {
-                    // Safety checks
                     if (!this._isShowing || !this.visible || this._isPinned) {
-                        return;
-                    }
-
-                    const timeSinceShow = Date.now() - this._showTime;
-                    if (timeSinceShow < 500) {
-                        debugLog(`Ignoring focus change during grace period (${timeSinceShow}ms since show)`);
                         return;
                     }
 
@@ -1033,9 +1027,6 @@ export const ClipboardPopup = GObject.registerClass(
                 this._tooltip = null;
             }
 
-            // Clean up item timeouts
-            this._clearItemTimeouts();
-
             // Clean up all global handlers first
             this._cleanupAllGlobalHandlers();
 
@@ -1077,27 +1068,8 @@ export const ClipboardPopup = GObject.registerClass(
         }
 
         destroy() {
-            this._clearItemTimeouts();
             this.dispose_resources();
             super.destroy();
-        }
-
-        _clearItemTimeouts() {
-            // Clear all paste-on-hover timeouts from item rows
-            if (this._itemsBox) {
-                const children = this._itemsBox.get_children();
-                children.forEach(child => {
-                    if (child._pasteTimeoutId) {
-                        GLib.source_remove(child._pasteTimeoutId);
-                        child._pasteTimeoutId = null;
-                    }
-                    if (child._pasteResetTimeoutId) {
-                        GLib.source_remove(child._pasteResetTimeoutId);
-                        child._pasteResetTimeoutId = null;
-                    }
-                });
-            }
-            debugLog('Item timeouts cleared');
         }
 
         _loadItems() {
@@ -1175,16 +1147,10 @@ export const ClipboardPopup = GObject.registerClass(
             row.connect('button-press-event', (actor, event) => {
                 debugLog(`Row ${index} button-press-event, button=${event.get_button()}`);
                 if (event.get_button() === 1) {
-                    if (row._pasteTimeoutId) {
-                        debugLog(`Cancelling paste timeout for item ${index} (user clicked)`);
-                        GLib.source_remove(row._pasteTimeoutId);
-                        row._pasteTimeoutId = null;
-                    }
-
                     this._selectedIndex = index;
                     this._updateSelection();
                     debugLog(`Single click on row ${index}, selecting and pasting...`);
-                    this._pasteFromHover = false;
+                    this._allowNextPaste = true;
                     this._pasteSelected();
                     return Clutter.EVENT_STOP;
                 } else if (event.get_button() === 3) {
@@ -1200,67 +1166,13 @@ export const ClipboardPopup = GObject.registerClass(
                 debugLog(`ENTER EVENT on row ${index}`);
                 this._selectedIndex = index;
                 this._updateSelection();
-
-                let pasteOnSelect = false;
-                if (this._settings) {
-                    pasteOnSelect = this._settings.get_boolean('paste-on-select');
-                }
-
-                debugLog(`Hover on item ${index}, paste-on-select=${pasteOnSelect}, visible=${this.visible}, isShowing=${this._isShowing}`);
-
-                if (pasteOnSelect) {
-                    // Clear existing timeout before creating new one
-                    if (row._pasteTimeoutId) {
-                        debugLog(`Cancelling existing paste timeout for row ${index}`);
-                        GLib.source_remove(row._pasteTimeoutId);
-                        row._pasteTimeoutId = null;
-                    }
-                    if (row._pasteResetTimeoutId) {
-                        GLib.source_remove(row._pasteResetTimeoutId);
-                        row._pasteResetTimeoutId = null;
-                    }
-
-                    debugLog(`Setting up paste timeout for row ${index} (500ms delay)`);
-                    row._pasteTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
-                        debugLog(`Paste timeout fired for row ${index} - checking conditions...`);
-                        debugLog(`  selectedIndex=${this._selectedIndex}, index=${index}, visible=${this.visible}, isShowing=${this._isShowing}`);
-
-                        if (this._selectedIndex === index && this.visible && this._isShowing) {
-                            debugLog(`✓ Conditions met - PASTING item ${index} (from paste-on-select hover)`);
-                            this._pasteFromHover = true;
-                            this._pasteSelected();
-                            // Clear any existing reset timeout before creating new one
-                            if (row._pasteResetTimeoutId) {
-                                GLib.source_remove(row._pasteResetTimeoutId);
-                                row._pasteResetTimeoutId = null;
-                            }
-                            row._pasteResetTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
-                                this._pasteFromHover = false;
-                                row._pasteResetTimeoutId = null;
-                                return GLib.SOURCE_REMOVE;
-                            });
-                        } else {
-                            debugLog(`✗ Conditions NOT met - NOT pasting`);
-                        }
-                        row._pasteTimeoutId = null;
-                        return GLib.SOURCE_REMOVE;
-                    });
-                } else {
-                    debugLog(`Paste on select is DISABLED, not setting timeout`);
-                }
+                debugLog(`Hover on item ${index}, selection updated without auto-paste`);
+                return Clutter.EVENT_PROPAGATE;
             });
 
             row.connect('leave-event', (actor, event) => {
                 debugLog(`LEAVE EVENT on row ${index}`);
-                if (row._pasteTimeoutId) {
-                    debugLog(`Cancelling paste timeout for item ${index} (user left row)`);
-                    GLib.source_remove(row._pasteTimeoutId);
-                    row._pasteTimeoutId = null;
-                }
-                if (row._pasteResetTimeoutId) {
-                    GLib.source_remove(row._pasteResetTimeoutId);
-                    row._pasteResetTimeoutId = null;
-                }
+                return Clutter.EVENT_PROPAGATE;
             });
 
             if (index < 9) {
@@ -1448,9 +1360,15 @@ export const ClipboardPopup = GObject.registerClass(
             });
         }
 
-        _pasteSelected() {
+        async _pasteSelected() {
             debugLog(`=== _pasteSelected() CALLED ===`);
             debugLog(`Items length: ${this._items.length}, selectedIndex: ${this._selectedIndex}`);
+
+            if (!this._allowNextPaste) {
+                debugLog('_pasteSelected: Ignoring non-explicit paste trigger');
+                return;
+            }
+            this._allowNextPaste = false;
 
             if (this._items.length === 0 || this._selectedIndex >= this._items.length) {
                 debugLog(`✗ _pasteSelected: No items or invalid index (${this._selectedIndex}/${this._items.length})`);
@@ -1461,13 +1379,19 @@ export const ClipboardPopup = GObject.registerClass(
             debugLog(`✓ _pasteSelected: Pasting item ${item.id} (type: ${item.type})`);
             debugLog(`  Item preview: ${item.preview ? item.preview.substring(0, 50) : 'no preview'}`);
 
+            let copied = true;
             if (item.type === ItemType.IMAGE && item.content) {
                 debugLog(`Copying image to clipboard: ${item.content}`);
-                this._monitor.copyImageToClipboard(item.content);
+                copied = await this._monitor.copyImageToClipboard(item.content);
             } else {
                 const content = this._plainTextMode ? item.plainText : item.content;
                 debugLog(`Copying text to clipboard (plainText=${this._plainTextMode}): ${content ? content.substring(0, 50) : 'null'}...`);
                 this._monitor.copyToClipboard(content, this._plainTextMode, true);
+            }
+
+            if (!copied) {
+                debugLog('_pasteSelected: Clipboard write failed, aborting paste flow');
+                return;
             }
 
             this._database.updateItem(item.id, {
@@ -1479,19 +1403,9 @@ export const ClipboardPopup = GObject.registerClass(
             if (this._settings) {
                 closeOnPaste = this._settings.get_boolean('close-on-paste');
             }
-
-            const isFromHover = this._pasteFromHover || false;
-            debugLog(`close-on-paste=${closeOnPaste}, _isPinned=${this._isPinned}, isFromHover=${isFromHover}`);
-
-            if (!isFromHover) {
-                debugLog('Triggering restore-and-paste flow after explicit selection');
-                this._extension.pasteClipboardContents();
-            } else if (closeOnPaste && !this._isPinned) {
-                debugLog('Closing popup after hover paste');
-                this._extension.hidePopup();
-            } else {
-                debugLog(`NOT closing popup (close-on-paste=${closeOnPaste}, pinned=${this._isPinned}, isFromHover=${isFromHover})`);
-            }
+            debugLog(`close-on-paste=${closeOnPaste}, _isPinned=${this._isPinned}`);
+            debugLog('Triggering restore-and-paste flow after explicit selection');
+            this._extension.pasteClipboardContents();
 
             debugLog(`=== _pasteSelected() COMPLETED ===`);
         }
@@ -1733,6 +1647,7 @@ export const ClipboardPopup = GObject.registerClass(
             }
 
             if (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter) {
+                this._allowNextPaste = true;
                 this._pasteSelected();
                 return Clutter.EVENT_STOP;
             }
@@ -1811,6 +1726,7 @@ export const ClipboardPopup = GObject.registerClass(
                     const index = symbol - Clutter.KEY_1;
                     if (index < this._items.length) {
                         this._selectedIndex = index;
+                        this._allowNextPaste = true;
                         this._pasteSelected();
                     }
                     return Clutter.EVENT_STOP;

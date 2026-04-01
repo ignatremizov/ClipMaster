@@ -113,7 +113,11 @@ export class FileUtils {
                 return null;
             }
 
-            const [contents] = await file.load_contents_async(null);
+            const [success, contents] = file.load_contents(null);
+            if (!success || !contents) {
+                return null;
+            }
+
             return new TextDecoder().decode(contents);
         } catch (e) {
             console.warn(`FileUtils.loadTextFile error: ${e.message}`);
